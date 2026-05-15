@@ -1,6 +1,3 @@
-// src/app/api/auth/login/route.ts
-// Redirige al usuario a Mercado Libre para autorizar la app
-
 import { NextResponse } from "next/server";
 
 export async function GET() {
@@ -11,6 +8,7 @@ export async function GET() {
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("client_id", clientId);
   authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope", "offline_access read");
 
   return NextResponse.redirect(authUrl.toString());
 }
