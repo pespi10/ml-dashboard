@@ -14,6 +14,7 @@ interface ProfitItem {
   itemId: string;
   title: string;
   categoryId: string;
+  categoryName: string;
   unitsSold: number;
   grossRevenue: number;
   totalSaleFees: number;
@@ -35,6 +36,7 @@ interface EnrichedItem extends ProfitItem {
 
 interface CategoryRow {
   categoryId: string;
+  categoryName: string;
   grossRevenue: number;
   totalSaleFees: number;
   unitsSold: number;
@@ -46,6 +48,7 @@ interface CategoryRow {
 
 type SortCol =
   | "title"
+  | "categoryName"
   | "unitsSold"
   | "grossRevenue"
   | "totalSaleFees"
@@ -211,6 +214,8 @@ export default function RentabilidadPage() {
       switch (sortCol) {
         case "title":
           return dir * a.title.localeCompare(b.title);
+        case "categoryName":
+          return dir * a.categoryName.localeCompare(b.categoryName);
         case "unitsSold":
           return dir * (a.unitsSold - b.unitsSold);
         case "grossRevenue":
@@ -242,6 +247,7 @@ export default function RentabilidadPage() {
   const categoryData = useMemo<CategoryRow[]>(() => {
     const map: Record<string, {
       categoryId: string;
+      categoryName: string;
       grossRevenue: number;
       totalSaleFees: number;
       unitsSold: number;
@@ -254,6 +260,7 @@ export default function RentabilidadPage() {
       if (!map[item.categoryId]) {
         map[item.categoryId] = {
           categoryId: item.categoryId,
+          categoryName: item.categoryName,
           grossRevenue: 0, totalSaleFees: 0,
           unitsSold: 0, skuCount: 0, skusWithCost: 0, partialCost: 0,
         };
@@ -286,7 +293,7 @@ export default function RentabilidadPage() {
 
   // ── Chart data ─────────────────────────────────────────
   const chartData = categoryData.map((cat) => ({
-    name: cat.categoryId,
+    name: cat.categoryName,
     margin:
       cat.margin ??
       (cat.grossRevenue > 0
@@ -344,7 +351,7 @@ export default function RentabilidadPage() {
     <>
       {[1, 2, 3, 4, 5].map((i) => (
         <tr key={i}>
-          <td colSpan={7} style={{ padding: "6px 0" }}>
+          <td colSpan={8} style={{ padding: "6px 0" }}>
             <div className="skeleton" style={{ height: "36px", borderRadius: "var(--radius)" }} />
           </td>
         </tr>
@@ -404,6 +411,7 @@ export default function RentabilidadPage() {
               <thead>
                 <tr>
                   <SortHeader label="Producto"      col="title"        sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader label="Categoría"    col="categoryName" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
                   <SortHeader label="Unidades"      col="unitsSold"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                   <SortHeader label="Rev. bruto"    col="grossRevenue" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                   <SortHeader label="Comisión ML"   col="totalSaleFees" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
@@ -437,6 +445,17 @@ export default function RentabilidadPage() {
                         }}>
                           {item.itemId}
                         </p>
+                      </td>
+
+                      {/* Categoría */}
+                      <td style={{
+                        padding: "10px 12px",
+                        fontFamily: "var(--font-mono)", fontSize: "12px",
+                        color: "var(--text-muted)",
+                        maxWidth: "160px",
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}>
+                        {item.categoryName}
                       </td>
 
                       {/* Unidades */}
@@ -553,12 +572,12 @@ export default function RentabilidadPage() {
                 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
                     <p style={{
-                      fontFamily: "var(--font-mono)", fontSize: "11px",
-                      color: "var(--yellow)", fontWeight: "500",
+                      fontFamily: "var(--font-display)", fontSize: "12px",
+                      fontWeight: "700",
                       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                       flex: 1, marginRight: "8px",
                     }}>
-                      {cat.categoryId}
+                      {cat.categoryName}
                     </p>
                     <span style={{
                       fontFamily: "var(--font-mono)", fontSize: "10px",

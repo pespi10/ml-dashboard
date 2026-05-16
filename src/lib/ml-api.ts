@@ -111,6 +111,7 @@ export interface ProfitabilityItem {
   itemId: string;
   title: string;
   categoryId: string;
+  categoryName: string;
   unitsSold: number;
   grossRevenue: number;
   totalSaleFees: number;
@@ -121,6 +122,7 @@ export interface ProfitabilityItem {
 
 export interface ProfitabilityCategory {
   categoryId: string;
+  categoryName: string;
   unitsSold: number;
   grossRevenue: number;
   totalSaleFees: number;
@@ -235,6 +237,7 @@ export function getProfitabilityByItem(orders: MLOrder[]): ProfitabilityItem[] {
           itemId: id,
           title: oi.item.title,
           categoryId: oi.item.category_id,
+          categoryName: oi.item.category_id,
           unitsSold: 0,
           grossRevenue: 0,
           totalSaleFees: 0,
@@ -254,7 +257,7 @@ export function getProfitabilityByItem(orders: MLOrder[]): ProfitabilityItem[] {
     const shippingCost = orderIds.size * SHIPPING_COST_PER_ORDER;
     const netRevenue = item.grossRevenue - item.totalSaleFees - shippingCost;
     const margin = item.grossRevenue > 0 ? (netRevenue / item.grossRevenue) * 100 : 0;
-    return { ...item, shippingCost, netRevenue, margin };
+    return { ...item, categoryName: item.categoryId, shippingCost, netRevenue, margin };
   });
 }
 
@@ -267,6 +270,7 @@ export function getProfitabilityByCategory(orders: MLOrder[]): ProfitabilityCate
     if (!map[cat]) {
       map[cat] = {
         categoryId: cat,
+        categoryName: cat,
         unitsSold: 0,
         grossRevenue: 0,
         totalSaleFees: 0,
@@ -285,6 +289,17 @@ export function getProfitabilityByCategory(orders: MLOrder[]): ProfitabilityCate
     ...cat,
     margin: cat.grossRevenue > 0 ? (cat.netRevenue / cat.grossRevenue) * 100 : 0,
   }));
+}
+
+// ── Category name resolution ──────────────────────────────────────────
+
+async function getCategoryName(categoryId: string, tokens: MLTokens): Promise<string> {
+  try {
+    const data = await mlFetch<{ name: string }>(`/categories/${categoryId}`, tokens);
+    return data.name;
+  } catch {
+    return categoryId;
+  }
 }
 
 // ── Dashboard stats ───────────────────────────────────────────────────
@@ -338,6 +353,19 @@ export async function getDashboardStats(
     .sort((a, b) => a.available_quantity - b.available_quantity)
     .slice(0, 10);
 
+  const profByItem = getProfitabilityByItem(orders);
+  const profByCategory = getProfitabilityByCategory(orders);
+
+  const catIdSet: Record<string, true> = {};
+  profByItem.forEach((i) => { catIdSet[i.categoryId] = true; });
+  const uniqueCatIds = Object.keys(catIdSet);
+  const resolvedNames = await Promise.all(
+    uniqueCatIds.map((id) => getCategoryName(id, tokens))
+  );
+  const catNameMap: Record<string, string> = Object.fromEntries(
+    uniqueCatIds.map((id, idx) => [id, resolvedNames[idx]])
+  );
+
   return {
     gmv,
     gmvPrev,
@@ -349,8 +377,14 @@ export async function getDashboardStats(
     topItems,
     revenueByDay,
     stockAlerts,
-    profitabilityByItem: getProfitabilityByItem(orders),
-    profitabilityByCategory: getProfitabilityByCategory(orders),
+    profitabilityByItem: profByItem.map((i) => ({
+      ...i,
+      categoryName: catNameMap[i.categoryId] ?? i.categoryId,
+    })),
+    profitabilityByCategory: profByCategory.map((c) => ({
+      ...c,
+      categoryName: catNameMap[c.categoryId] ?? c.categoryId,
+    })),
   };
 }
 
