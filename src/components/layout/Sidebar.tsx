@@ -6,10 +6,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const NAV = [
-  { href: "/dashboard",          label: "Overview",    icon: "⬡" },
-  { href: "/dashboard/productos", label: "Productos",   icon: "◈" },
-  { href: "/dashboard/ventas",    label: "Ventas",      icon: "◆" },
-  { href: "/dashboard/rentabilidad", label: "Rentabilidad", icon: "◇" },
+  { href: "/dashboard",               label: "Overview",      icon: "⬡" },
+  { href: "/dashboard/productos",     label: "Productos",     icon: "◈" },
+  { href: "/dashboard/ventas",        label: "Ventas",        icon: "◆" },
+  { href: "/dashboard/rentabilidad",  label: "Rentabilidad",  icon: "◇" },
+  { href: "/dashboard/costos",        label: "Costos",        icon: "◉" },
 ];
 
 export default function Sidebar() {
