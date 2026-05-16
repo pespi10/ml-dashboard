@@ -1,7 +1,7 @@
-// src/lib/ml-api.ts
-// Mercado Libre API client — todas las llamadas pasan por acá
-
 const ML_BASE = "https://api.mercadolibre.com";
+
+export const SHIPPING_COST_PER_ORDER = 0;
+// Costo fijo de envío por pedido — actualizar cuando se tenga el dato real
 
 export interface MLTokens {
   access_token: string;
@@ -88,11 +88,14 @@ export interface MLOrder {
   date_closed: string;
   status: string;
   total_amount: number;
+  paid_amount: number;
   currency_id: string;
   order_items: {
     item: { id: string; title: string; category_id: string };
     quantity: number;
     unit_price: number;
+    sale_fee: number;
+    gross_price: number;
   }[];
   buyer: { id: number; nickname: string };
 }
@@ -104,8 +107,30 @@ export interface MLVisit {
   visits: { date: string; total: number }[];
 }
 
+export interface ProfitabilityItem {
+  itemId: string;
+  title: string;
+  categoryId: string;
+  unitsSold: number;
+  grossRevenue: number;
+  totalSaleFees: number;
+  shippingCost: number;
+  netRevenue: number;
+  margin: number;
+}
+
+export interface ProfitabilityCategory {
+  categoryId: string;
+  unitsSold: number;
+  grossRevenue: number;
+  totalSaleFees: number;
+  shippingCost: number;
+  netRevenue: number;
+  margin: number;
+}
+
 export interface DashboardStats {
-  gmv: number;          // Gross Merchandise Value (período)
+  gmv: number;
   gmvPrev: number;
   orders: number;
   ordersPrev: number;
@@ -115,14 +140,14 @@ export interface DashboardStats {
   topItems: { id: string; title: string; sold: number; revenue: number }[];
   revenueByDay: { date: string; revenue: number; orders: number }[];
   stockAlerts: MLItem[];
+  profitabilityByItem: ProfitabilityItem[];
+  profitabilityByCategory: ProfitabilityCategory[];
 }
 
 // ── API calls ─────────────────────────────────────────────────────────
 
-/** Listado de publicaciones del vendedor */
 export async function getMyItems(tokens: MLTokens): Promise<MLItem[]> {
   const userId = tokens.user_id;
-  // Paginamos hasta 200 items
   const items: MLItem[] = [];
   let offset = 0;
   const limit = 50;
@@ -135,14 +160,12 @@ export async function getMyItems(tokens: MLTokens): Promise<MLItem[]> {
 
     if (!data.results.length) break;
 
-    // Traemos detalles en batch de hasta 20
     const chunks = chunkArray(data.results, 20);
     for (const chunk of chunks) {
       const details = await mlFetch<MLItem[]>(
         `/items?ids=${chunk.join(",")}`,
         tokens
       );
-      // La API devuelve { code, body } por item
       const bodyItems = (details as unknown as { code: number; body: MLItem }[])
         .filter((r) => r.code === 200)
         .map((r) => r.body);
@@ -156,7 +179,6 @@ export async function getMyItems(tokens: MLTokens): Promise<MLItem[]> {
   return items;
 }
 
-/** Órdenes del período (últimos N días) */
 export async function getOrders(
   tokens: MLTokens,
   days = 30
@@ -184,7 +206,6 @@ export async function getOrders(
   return orders;
 }
 
-/** Visitas de un item */
 export async function getItemVisits(
   tokens: MLTokens,
   itemId: string,
@@ -201,7 +222,73 @@ export async function getItemVisits(
   );
 }
 
-/** Stats consolidadas para el dashboard */
+// ── Profitability ─────────────────────────────────────────────────────
+
+export function getProfitabilityByItem(orders: MLOrder[]): ProfitabilityItem[] {
+  const map: Record<string, Omit<ProfitabilityItem, "margin"> & { orderIds: Set<number> }> = {};
+
+  for (const order of orders) {
+    for (const oi of order.order_items) {
+      const id = oi.item.id;
+      if (!map[id]) {
+        map[id] = {
+          itemId: id,
+          title: oi.item.title,
+          categoryId: oi.item.category_id,
+          unitsSold: 0,
+          grossRevenue: 0,
+          totalSaleFees: 0,
+          shippingCost: 0,
+          netRevenue: 0,
+          orderIds: new Set(),
+        };
+      }
+      map[id].unitsSold += oi.quantity;
+      map[id].grossRevenue += oi.unit_price * oi.quantity;
+      map[id].totalSaleFees += oi.sale_fee ?? 0;
+      map[id].orderIds.add(order.id);
+    }
+  }
+
+  return Object.values(map).map(({ orderIds, ...item }) => {
+    const shippingCost = orderIds.size * SHIPPING_COST_PER_ORDER;
+    const netRevenue = item.grossRevenue - item.totalSaleFees - shippingCost;
+    const margin = item.grossRevenue > 0 ? (netRevenue / item.grossRevenue) * 100 : 0;
+    return { ...item, shippingCost, netRevenue, margin };
+  });
+}
+
+export function getProfitabilityByCategory(orders: MLOrder[]): ProfitabilityCategory[] {
+  const items = getProfitabilityByItem(orders);
+  const map: Record<string, Omit<ProfitabilityCategory, "margin">> = {};
+
+  for (const item of items) {
+    const cat = item.categoryId;
+    if (!map[cat]) {
+      map[cat] = {
+        categoryId: cat,
+        unitsSold: 0,
+        grossRevenue: 0,
+        totalSaleFees: 0,
+        shippingCost: 0,
+        netRevenue: 0,
+      };
+    }
+    map[cat].unitsSold += item.unitsSold;
+    map[cat].grossRevenue += item.grossRevenue;
+    map[cat].totalSaleFees += item.totalSaleFees;
+    map[cat].shippingCost += item.shippingCost;
+    map[cat].netRevenue += item.netRevenue;
+  }
+
+  return Object.values(map).map((cat) => ({
+    ...cat,
+    margin: cat.grossRevenue > 0 ? (cat.netRevenue / cat.grossRevenue) * 100 : 0,
+  }));
+}
+
+// ── Dashboard stats ───────────────────────────────────────────────────
+
 export async function getDashboardStats(
   tokens: MLTokens
 ): Promise<DashboardStats> {
@@ -220,7 +307,6 @@ export async function getDashboardStats(
   const gmv = orders.reduce((s, o) => s + o.total_amount, 0);
   const gmvPrev = prevOrders.reduce((s, o) => s + o.total_amount, 0);
 
-  // Revenue por día (últimos 30)
   const byDay: Record<string, { revenue: number; orders: number }> = {};
   orders.forEach((o) => {
     const day = o.date_created.split("T")[0];
@@ -232,7 +318,6 @@ export async function getDashboardStats(
     .map(([date, v]) => ({ date, ...v }))
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  // Top items por revenue
   const itemRevenue: Record<string, { title: string; sold: number; revenue: number }> = {};
   orders.forEach((o) => {
     o.order_items.forEach((oi) => {
@@ -248,7 +333,6 @@ export async function getDashboardStats(
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, 5);
 
-  // Alertas de stock bajo
   const stockAlerts = items
     .filter((i) => i.status === "active" && i.available_quantity <= 3)
     .sort((a, b) => a.available_quantity - b.available_quantity)
@@ -265,6 +349,8 @@ export async function getDashboardStats(
     topItems,
     revenueByDay,
     stockAlerts,
+    profitabilityByItem: getProfitabilityByItem(orders),
+    profitabilityByCategory: getProfitabilityByCategory(orders),
   };
 }
 
