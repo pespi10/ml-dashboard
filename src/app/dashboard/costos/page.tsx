@@ -92,101 +92,120 @@ function parseDirectXLSX(buffer: ArrayBuffer): ParsedRow[] {
   return rows;
 }
 
-function normalizeHeader(s: string): string {
-  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, "_");
+// Normaliza a minúsculas sin tildes ni espacios
+function normCol(s: string): string {
+  return s.trim().toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/\s+/g, "_");
 }
 
-function detectEanIndices(headers: string[]) {
-  let eanIdx = 2, codigoIdx = 0, nombreIdx = 1;
-  let costoSinIdx = 3, costoCnIdx = 5, precioListaIdx = 6;
-  headers.forEach((h, i) => {
-    const n = normalizeHeader(h);
-    if (n.includes("ean") || n.includes("barcode") || n.includes("codigo_barra")) eanIdx = i;
-    else if ((n.includes("codigo") || n.includes("sku")) && !n.includes("barra")) codigoIdx = i;
-    else if (n.includes("nombre") || n.includes("descripcion") || n.includes("producto")) nombreIdx = i;
-    else if (n.includes("costo_sin") || n === "costo_sin_iva" || n === "precio_sin_iva") costoSinIdx = i;
-    else if (n.includes("costo_con") || n === "costo_con_iva" || n === "costo" || n === "precio_costo") costoCnIdx = i;
-    else if (n.includes("precio_lista") || n === "lista" || n === "pvp" || n === "precio_publico") precioListaIdx = i;
-  });
-  return { eanIdx, codigoIdx, nombreIdx, costoSinIdx, costoCnIdx, precioListaIdx };
+// Construye un mapa { header_normalizado → índice }
+function buildColMap(headers: string[]): Record<string, number> {
+  const map: Record<string, number> = {};
+  headers.forEach((h, i) => { map[normCol(h)] = i; });
+  return map;
+}
+
+// Busca el primer candidato que exista en el mapa, devuelve -1 si ninguno
+function colIdx(map: Record<string, number>, ...candidates: string[]): number {
+  for (const c of candidates) if (map[c] !== undefined) return map[c];
+  return -1;
+}
+
+// Parsea número con soporte para formato argentino: "1.500,50" → 1500.50
+function parseNum(s: string | number | undefined | null): number {
+  if (s === undefined || s === null) return 0;
+  if (typeof s === "number") return s;
+  const v = s.trim().replace(/\s/g, "");
+  if (!v) return 0;
+  // Ambos separadores: determinar cuál es decimal según posición
+  if (v.includes(".") && v.includes(",")) {
+    return v.lastIndexOf(".") < v.lastIndexOf(",")
+      ? parseFloat(v.replace(/\./g, "").replace(",", ".")) || 0   // 1.500,50
+      : parseFloat(v.replace(/,/g, "")) || 0;                     // 1,500.50
+  }
+  if (v.includes(",")) {
+    const parts = v.split(",");
+    // "15000,50" → decimal; "1,500" → miles
+    return parts.length === 2 && parts[1].length <= 2
+      ? parseFloat(v.replace(",", ".")) || 0
+      : parseFloat(v.replace(/,/g, "")) || 0;
+  }
+  // "15.000" → miles argentino si termina en exactamente 3 dígitos tras el punto
+  if (v.includes(".")) {
+    const parts = v.split(".");
+    if (parts.length === 2 && parts[1].length === 3 && !isNaN(Number(parts[0])))
+      return parseFloat(v.replace(/\./g, "")) || 0;
+  }
+  return parseFloat(v) || 0;
+}
+
+function splitCsvLine(line: string, delim: string): string[] {
+  const cols: string[] = [];
+  let cur = "";
+  let inQuote = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { inQuote = !inQuote; continue; }
+    if (ch === delim && !inQuote) { cols.push(cur.trim()); cur = ""; continue; }
+    cur += ch;
+  }
+  cols.push(cur.trim());
+  return cols;
+}
+
+function extractEanRows(headers: string[], dataRows: string[][]): EanRow[] {
+  const map = buildColMap(headers);
+
+  // Columnas requeridas — orden de prioridad para cada campo
+  const iEan    = colIdx(map, "ean", "barcode", "codigo_barra", "cod_barra", "gtin");
+  const iCod    = colIdx(map, "codigo", "sku", "cod", "id", "referencia");
+  const iNom    = colIdx(map, "nombre", "descripcion", "producto", "name", "titulo");
+  const iSin    = colIdx(map, "costo_sin_iva", "precio_sin_iva", "costo_neto", "costo_s_iva");
+  const iCon    = colIdx(map, "costo_con_iva", "precio_costo", "costo_c_iva");
+  const iLista  = colIdx(map, "precio_lista", "lista", "pvp", "precio_publico", "p_lista");
+
+  if (iEan === -1) return []; // columna EAN obligatoria
+
+  const rows: EanRow[] = [];
+  for (const cols of dataRows) {
+    const ean = String(cols[iEan] ?? "").replace(/\D/g, "");
+    if (!ean) continue;
+    const costo_con_iva = parseNum(cols[iCon]);
+    if (costo_con_iva <= 0) continue;
+    rows.push({
+      ean,
+      codigo:       iCod   >= 0 ? (cols[iCod]   ?? "").trim() : "",
+      nombre:       iNom   >= 0 ? (cols[iNom]   ?? "").trim() : "",
+      costo_sin_iva: parseNum(iSin >= 0 ? cols[iSin] : undefined),
+      costo_con_iva,
+      precio_lista:  parseNum(iLista >= 0 ? cols[iLista] : undefined),
+    });
+  }
+  return rows;
 }
 
 function parseEanCSV(text: string): EanRow[] {
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return [];
+  if (lines.length < 2) return [];
   const delim = lines[0].split(";").length > lines[0].split(",").length ? ";" : ",";
-
-  const parseLine = (line: string): string[] => {
-    const cols: string[] = [];
-    let cur = "";
-    let inQuote = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') { inQuote = !inQuote; continue; }
-      if (ch === delim && !inQuote) { cols.push(cur.trim()); cur = ""; continue; }
-      cur += ch;
-    }
-    cols.push(cur.trim());
-    return cols;
-  };
-
-  const firstRow = parseLine(lines[0]);
-  const hasHeaders = firstRow.some(c =>
-    ["ean", "codigo", "costo", "precio", "nombre"].some(h => normalizeHeader(c).includes(h))
-  );
-  const indices = hasHeaders ? detectEanIndices(firstRow) : {
-    eanIdx: 2, codigoIdx: 0, nombreIdx: 1, costoSinIdx: 3, costoCnIdx: 5, precioListaIdx: 6,
-  };
-
-  const rows: EanRow[] = [];
-  for (let i = hasHeaders ? 1 : 0; i < lines.length; i++) {
-    const cols = parseLine(lines[i]);
-    const ean = cols[indices.eanIdx]?.replace(/\D/g, "") || "";
-    if (!ean) continue;
-    const costo_con_iva = parseFloat(cols[indices.costoCnIdx]?.replace(",", ".") || "0") || 0;
-    if (costo_con_iva <= 0) continue;
-    rows.push({
-      ean,
-      codigo: cols[indices.codigoIdx]?.trim() || "",
-      nombre: cols[indices.nombreIdx]?.trim() || "",
-      costo_sin_iva: parseFloat(cols[indices.costoSinIdx]?.replace(",", ".") || "0") || 0,
-      costo_con_iva,
-      precio_lista: parseFloat(cols[indices.precioListaIdx]?.replace(",", ".") || "0") || 0,
-    });
-  }
-  return rows;
+  // Primera fila SIEMPRE es el header
+  const headers = splitCsvLine(lines[0], delim);
+  const dataRows = lines.slice(1).map(l => splitCsvLine(l, delim));
+  return extractEanRows(headers, dataRows);
 }
 
 function parseEanXLSX(buffer: ArrayBuffer): EanRow[] {
   const wb = XLSX.read(buffer, { type: "array" });
   const ws = wb.Sheets[wb.SheetNames[0]];
-  const json = XLSX.utils.sheet_to_json<(string | number)[]>(ws, { header: 1 });
-  if (!json.length) return [];
-  const firstRow = (json[0] as (string | number)[]).map(c => String(c));
-  const hasHeaders = firstRow.some(c =>
-    ["ean", "codigo", "costo", "precio", "nombre"].some(h => normalizeHeader(c).includes(h))
+  // header:1 → array of arrays; primera fila siempre es header
+  const json = XLSX.utils.sheet_to_json<(string | number)[]>(ws, { header: 1, raw: false });
+  if (json.length < 2) return [];
+  const headers = (json[0] as (string | number)[]).map(c => String(c));
+  const dataRows = json.slice(1).map(row =>
+    (row as (string | number)[]).map(c => String(c ?? ""))
   );
-  const indices = hasHeaders ? detectEanIndices(firstRow) : {
-    eanIdx: 2, codigoIdx: 0, nombreIdx: 1, costoSinIdx: 3, costoCnIdx: 5, precioListaIdx: 6,
-  };
-  const rows: EanRow[] = [];
-  for (let i = hasHeaders ? 1 : 0; i < json.length; i++) {
-    const row = json[i] as (string | number)[];
-    if (!row || row.length < 3) continue;
-    const ean = String(row[indices.eanIdx] ?? "").replace(/\D/g, "");
-    if (!ean) continue;
-    const costo_con_iva = parseFloat(String(row[indices.costoCnIdx] ?? "0")) || 0;
-    if (costo_con_iva <= 0) continue;
-    rows.push({
-      ean,
-      codigo: String(row[indices.codigoIdx] ?? "").trim(),
-      nombre: String(row[indices.nombreIdx] ?? "").trim(),
-      costo_sin_iva: parseFloat(String(row[indices.costoSinIdx] ?? "0")) || 0,
-      costo_con_iva,
-      precio_lista: parseFloat(String(row[indices.precioListaIdx] ?? "0")) || 0,
-    });
-  }
-  return rows;
+  return extractEanRows(headers, dataRows);
 }
 
 // ── Storage helpers ──────────────────────────────────────────────────────────
@@ -196,7 +215,8 @@ function loadFromStorage() {
   try {
     const costs: Record<string, number> = JSON.parse(localStorage.getItem("ml_costs") || "{}");
     const titles: Record<string, string> = JSON.parse(localStorage.getItem("ml_costs_titles") || "{}");
-    const syncedCosts: Record<string, SyncedCostEntry> = JSON.parse(localStorage.getItem("ml_synced_costs") || "{}");
+    // ml_costs_ean es la nueva clave; ml_synced_costs era la anterior (ignorar)
+    const syncedCosts: Record<string, SyncedCostEntry> = JSON.parse(localStorage.getItem("ml_costs_ean") || "{}");
     return { costs, titles, syncedCosts };
   } catch {
     return { costs: {}, titles: {}, syncedCosts: {} };
@@ -404,10 +424,10 @@ export default function CostosPage() {
       });
     }
 
-    // Persist matched items to localStorage
+    // Persist matched items to localStorage — reemplaza completamente el set anterior
     const newCosts = { ...costs };
     const newTitles = { ...titles };
-    const newSynced = { ...syncedCosts };
+    const newSynced: Record<string, SyncedCostEntry> = {}; // fresh — no merge con datos viejos mal mapeados
 
     for (const r of allResults) {
       if (r.found && r.ml_id) {
@@ -427,7 +447,8 @@ export default function CostosPage() {
 
     localStorage.setItem("ml_costs", JSON.stringify(newCosts));
     localStorage.setItem("ml_costs_titles", JSON.stringify(newTitles));
-    localStorage.setItem("ml_synced_costs", JSON.stringify(newSynced));
+    localStorage.setItem("ml_costs_ean", JSON.stringify(newSynced));
+    localStorage.removeItem("ml_synced_costs"); // elimina clave vieja
     setCosts(newCosts); setTitles(newTitles); setSyncedCosts(newSynced);
 
     setSyncProgress(prev => prev ? { ...prev, status: "done", processed: eanRows.length, matched: totalMatched, notFound: totalNotFound, results: allResults } : null);
@@ -634,7 +655,7 @@ export default function CostosPage() {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
-                    {["EAN", "Código", "Nombre", "Costo c/IVA", "P. Lista"].map((h, j) => (
+                    {["Código", "Nombre", "EAN", "Costo s/IVA", "Costo c/IVA", "P. Lista"].map((h, j) => (
                       <th key={j} style={{ ...labelStyle, padding: "8px 12px", textAlign: j >= 3 ? "right" : "left", borderBottom: "1px solid var(--border)" }}>{h}</th>
                     ))}
                   </tr>
@@ -642,10 +663,11 @@ export default function CostosPage() {
                 <tbody>
                   {eanPreview.map((row, i) => (
                     <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--yellow)" }}>{row.ean}</td>
                       <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-dim)" }}>{row.codigo || "—"}</td>
-                      <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-muted)", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.nombre || "—"}</td>
-                      <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--green)", textAlign: "right" }}>{formatARS(row.costo_con_iva)}</td>
+                      <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-muted)", maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.nombre || "—"}</td>
+                      <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--yellow)" }}>{row.ean}</td>
+                      <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-muted)", textAlign: "right" }}>{row.costo_sin_iva > 0 ? formatARS(row.costo_sin_iva) : "—"}</td>
+                      <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--green)", fontWeight: "600", textAlign: "right" }}>{formatARS(row.costo_con_iva)}</td>
                       <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text)", textAlign: "right" }}>{row.precio_lista > 0 ? formatARS(row.precio_lista) : "—"}</td>
                     </tr>
                   ))}
@@ -732,8 +754,8 @@ export default function CostosPage() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
-                  {["MLA ID", "Nombre / Título ML", "EAN", "Costo c/IVA", "P. Lista", ""].map((h, j) => (
-                    <th key={j} style={{ ...labelStyle, padding: "8px 12px", textAlign: j >= 3 && j < 5 ? "right" : "left", borderBottom: "1px solid var(--border)" }}>{h}</th>
+                  {["MLA ID", "Código", "Nombre / Título ML", "EAN", "Costo s/IVA", "Costo c/IVA", "P. Lista", ""].map((h, j) => (
+                    <th key={j} style={{ ...labelStyle, padding: "8px 12px", textAlign: j >= 4 && j < 7 ? "right" : "left", borderBottom: "1px solid var(--border)" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -744,12 +766,13 @@ export default function CostosPage() {
                     onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                   >
                     <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--yellow)" }}>{mlId}</td>
-                    <td style={{ padding: "10px 12px", maxWidth: "240px" }}>
-                      <p style={{ fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.titulo_ml ?? entry.nombre}</p>
-                      {entry.codigo && <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{entry.codigo}</p>}
+                    <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--text-dim)" }}>{entry.codigo || "—"}</td>
+                    <td style={{ padding: "10px 12px", maxWidth: "200px" }}>
+                      <p style={{ fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.titulo_ml ?? entry.nombre}</p>
                     </td>
                     <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--text-dim)" }}>{entry.ean}</td>
-                    <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--green)", textAlign: "right" }}>{formatARS(entry.costo_con_iva)}</td>
+                    <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-muted)", textAlign: "right" }}>{entry.costo_sin_iva > 0 ? formatARS(entry.costo_sin_iva) : "—"}</td>
+                    <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--green)", fontWeight: "600", textAlign: "right" }}>{formatARS(entry.costo_con_iva)}</td>
                     <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text)", textAlign: "right" }}>{entry.precio_lista > 0 ? formatARS(entry.precio_lista) : "—"}</td>
                     <td style={{ padding: "10px 12px", textAlign: "right" }}>
                       <button
@@ -758,7 +781,7 @@ export default function CostosPage() {
                           const newCosts = { ...costs };
                           if (newCosts[mlId] === entry.costo_con_iva) delete newCosts[mlId];
                           const newTitles = { ...titles }; delete newTitles[mlId];
-                          localStorage.setItem("ml_synced_costs", JSON.stringify(newSynced));
+                          localStorage.setItem("ml_costs_ean", JSON.stringify(newSynced));
                           localStorage.setItem("ml_costs", JSON.stringify(newCosts));
                           localStorage.setItem("ml_costs_titles", JSON.stringify(newTitles));
                           setSyncedCosts(newSynced); setCosts(newCosts); setTitles(newTitles);

@@ -194,7 +194,7 @@ export default function RentabilidadPage() {
     try {
       const stored = JSON.parse(localStorage.getItem("ml_costs") || "{}");
       setMlCosts(stored);
-      const synced = JSON.parse(localStorage.getItem("ml_synced_costs") || "{}");
+      const synced = JSON.parse(localStorage.getItem("ml_costs_ean") || "{}");
       setMlSyncedCosts(synced);
     } catch { /* empty localStorage is fine */ }
 
