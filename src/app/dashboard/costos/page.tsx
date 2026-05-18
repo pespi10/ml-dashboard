@@ -255,6 +255,8 @@ export default function CostosPage() {
 
   useEffect(() => {
     try {
+      console.log("localStorage keys:", Object.keys(localStorage));
+      console.log("localStorage contents:", Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)?.slice(0, 50)])));
       const synced: Record<string, SyncedCostEntry> = JSON.parse(localStorage.getItem("ml_costs_ean") || "{}");
       const c: Record<string, number> = JSON.parse(localStorage.getItem("ml_costs") || "{}");
       const t: Record<string, string> = JSON.parse(localStorage.getItem("ml_costs_titles") || "{}");
@@ -408,11 +410,13 @@ export default function CostosPage() {
     let totalMatched = 0;
     let totalNotFound = 0;
 
-    // Limpiar todo antes de guardar los nuevos datos
-    Object.keys(localStorage).forEach(key => localStorage.removeItem(key));
+    // Borrar explícitamente todas las keys conocidas antes de guardar
+    ['ml_costs', 'ml_costs_titles', 'ml_costs_ean', 'ml_synced_costs', 'ml_costs_synced'].forEach(k => localStorage.removeItem(k));
     setCosts({});
     setTitles({});
     setSyncedCosts({});
+    console.log("[runSync] localStorage after clear:", Object.keys(localStorage));
+    console.log("[runSync] React state reset — costs:{} titles:{} syncedCosts:{}");
 
     setSyncProgress({ status: "running", total: eanRows.length, processed: 0, matched: 0, notFound: 0, results: [] });
 
@@ -467,6 +471,7 @@ export default function CostosPage() {
     localStorage.setItem("ml_costs_titles", JSON.stringify(newTitles));
     localStorage.setItem("ml_costs_ean", JSON.stringify(newSynced));
     setCosts(newCosts); setTitles(newTitles); setSyncedCosts(newSynced);
+    console.log("[runSync] localStorage after save:", Object.keys(localStorage));
 
     setSyncProgress(prev => prev ? { ...prev, status: "done", processed: eanRows.length, matched: totalMatched, notFound: totalNotFound, results: allResults } : null);
     setEanPreview(null);
