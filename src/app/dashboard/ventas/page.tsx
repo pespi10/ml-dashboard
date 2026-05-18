@@ -31,6 +31,8 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
 
 const COLS = "64px minmax(160px, 1.6fr) minmax(92px, 0.9fr) minmax(78px, 0.7fr) minmax(74px, 0.7fr) minmax(82px, 0.7fr) minmax(80px, 0.7fr)";
 
+const ACTIVE_STATUSES = new Set(["paid", "pending", "shipped", "delivered"]);
+
 export default function VentasPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [total, setTotal] = useState(0);
@@ -38,6 +40,7 @@ export default function VentasPage() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [costs, setCosts] = useState<Record<string, number>>({});
+  const [view, setView] = useState<"active" | "all">("active");
 
   useEffect(() => {
     try {
@@ -75,14 +78,16 @@ export default function VentasPage() {
       .finally(() => setLoadingMore(false));
   };
 
-  const totalGMV = orders.reduce((s, o) => s + o.total_amount, 0);
   const hasMore = orders.length < total;
+  const displayedOrders = view === "active"
+    ? orders.filter((o) => ACTIVE_STATUSES.has(o.status))
+    : orders;
 
   return (
     <div style={{ minWidth: 0 }}>
       <div style={{
         display: "flex", justifyContent: "space-between",
-        alignItems: "flex-end", marginBottom: "28px", flexWrap: "wrap", gap: "12px",
+        alignItems: "flex-end", marginBottom: "24px", flexWrap: "wrap", gap: "12px",
       }}>
         <div>
           <h1 style={{
@@ -94,22 +99,58 @@ export default function VentasPage() {
             {loading ? "—" : `Mostrando ${orders.length} de ${total} órdenes`}
           </p>
         </div>
+
+        {/* Tab toggle */}
         <div style={{
+          display: "flex",
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          padding: "3px",
+          gap: "2px",
+        }}>
+          {(["active", "all"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              style={{
+                background: view === v ? "var(--surface-2)" : "transparent",
+                border: view === v ? "1px solid var(--border)" : "1px solid transparent",
+                borderRadius: "calc(var(--radius) - 2px)",
+                padding: "6px 16px",
+                color: view === v ? "var(--text)" : "var(--text-muted)",
+                fontFamily: "var(--font-mono)",
+                fontSize: "12px",
+                cursor: "pointer",
+                fontWeight: view === v ? "600" : "400",
+                transition: "all 0.1s",
+              }}
+            >
+              {v === "active" ? "Activas / Pausadas" : "Todas"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Warning banner for "Todas" */}
+      {view === "all" && !loading && (
+        <div style={{
+          marginBottom: "16px",
+          padding: "10px 16px",
           background: "var(--yellow-dim)",
           border: "1px solid rgba(255,230,0,0.2)",
           borderRadius: "var(--radius)",
-          padding: "10px 20px",
-          textAlign: "right",
+          fontSize: "12px",
+          color: "var(--yellow)",
+          fontFamily: "var(--font-mono)",
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
         }}>
-          <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginBottom: "2px" }}>
-            GMV CARGADO
-          </p>
-          <p style={{
-            fontFamily: "var(--font-display)", fontSize: "22px",
-            fontWeight: "800", color: "var(--yellow)",
-          }}>{formatARS(totalGMV)}</p>
+          <span>⚠</span>
+          <span>Incluye órdenes canceladas. Los totales pueden no reflejar ingresos reales.</span>
         </div>
-      </div>
+      )}
 
       <div style={{
         background: "var(--surface)",
@@ -148,13 +189,13 @@ export default function VentasPage() {
           </div>
         )}
 
-        {!loading && orders.length === 0 && (
+        {!loading && displayedOrders.length === 0 && (
           <div style={{ padding: "48px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
-            Sin órdenes en los últimos 30 días
+            {view === "active" ? "Sin órdenes activas en los últimos 30 días" : "Sin órdenes en los últimos 30 días"}
           </div>
         )}
 
-        {!loading && orders.map((order, i) => {
+        {!loading && displayedOrders.map((order, i) => {
           const st = STATUS_LABEL[order.status] || { label: order.status, color: "var(--text-dim)" };
           const firstItem = order.order_items[0];
           const unitPrice = firstItem?.unit_price ?? 0;
@@ -180,7 +221,7 @@ export default function VentasPage() {
                 gridTemplateColumns: COLS,
                 gap: "12px",
                 padding: "14px 20px",
-                borderBottom: i < orders.length - 1 ? "1px solid var(--border)" : "none",
+                borderBottom: i < displayedOrders.length - 1 ? "1px solid var(--border)" : "none",
                 alignItems: "center",
                 transition: "background 0.1s",
               }}

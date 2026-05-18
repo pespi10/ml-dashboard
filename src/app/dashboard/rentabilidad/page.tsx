@@ -53,6 +53,13 @@ interface CategoryRow {
   margin: number | null;
 }
 
+interface ItemTax {
+  iva: string;
+  ibb: string;
+  otherLabel: string;
+  otherPct: string;
+}
+
 type SortCol =
   | "title"
   | "categoryName"
@@ -96,64 +103,35 @@ function calcROI(p: ProductCalc) {
 
 // ── Helper components ──────────────────────────────────────────────────
 
-function MarginBar({ margin }: { margin: number | null }) {
+function MarginText({ margin }: { margin: number | null }) {
   if (margin === null) {
-    return (
-      <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: "12px" }}>
-        —
-      </span>
-    );
+    return <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: "12px" }}>—</span>;
   }
   const color = margin > 20 ? "var(--green)" : margin >= 10 ? "var(--yellow)" : "var(--red)";
-  const clampedW = Math.min(Math.max(margin, 0), 100);
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-      <div style={{
-        flex: 1, height: "4px", background: "var(--border)",
-        borderRadius: "2px", minWidth: "50px",
-      }}>
-        <div style={{
-          width: `${clampedW}%`, height: "100%",
-          background: color, borderRadius: "2px",
-        }} />
-      </div>
-      <span style={{
-        fontSize: "12px", color, fontFamily: "var(--font-mono)",
-        width: "48px", textAlign: "right",
-      }}>
-        {margin.toFixed(1)}%
-      </span>
-    </div>
+    <span style={{ color, fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: "600" }}>
+      {margin.toFixed(1)}%
+    </span>
   );
 }
 
 function SortHeader({
   label, col, sortCol, sortDir, onSort, align = "left",
 }: {
-  label: string;
-  col: SortCol;
-  sortCol: SortCol;
-  sortDir: "asc" | "desc";
-  onSort: (c: SortCol) => void;
-  align?: "left" | "right";
+  label: string; col: SortCol; sortCol: SortCol;
+  sortDir: "asc" | "desc"; onSort: (c: SortCol) => void; align?: "left" | "right";
 }) {
   const active = sortCol === col;
   return (
     <th
       onClick={() => onSort(col)}
       style={{
-        padding: "8px 12px",
-        textAlign: align,
-        fontSize: "10px",
-        fontWeight: "600",
-        letterSpacing: "0.08em",
+        padding: "8px 12px", textAlign: align,
+        fontSize: "10px", fontWeight: "600", letterSpacing: "0.08em",
         textTransform: "uppercase",
         color: active ? "var(--yellow)" : "var(--text-muted)",
-        fontFamily: "var(--font-mono)",
-        borderBottom: "1px solid var(--border)",
-        cursor: "pointer",
-        userSelect: "none",
-        whiteSpace: "nowrap",
+        fontFamily: "var(--font-mono)", borderBottom: "1px solid var(--border)",
+        cursor: "pointer", userSelect: "none", whiteSpace: "nowrap",
       }}
     >
       {label}{active ? (sortDir === "desc" ? " ↓" : " ↑") : ""}
@@ -177,6 +155,10 @@ export default function RentabilidadPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [mlCosts, setMlCosts] = useState<Record<string, number>>({});
   const [mlSyncedCosts, setMlSyncedCosts] = useState<Record<string, SyncedCostEntry>>({});
+  const [taxes, setTaxes] = useState<Record<string, ItemTax>>({});
+
+  // ── Detail drawer state ────────────────────────────────
+  const [selectedItem, setSelectedItem] = useState<EnrichedItem | null>(null);
 
   // ── Sort state ─────────────────────────────────────────
   const [sortCol, setSortCol] = useState<SortCol>("realNetProfit");
@@ -195,6 +177,8 @@ export default function RentabilidadPage() {
       setMlCosts(stored);
       const synced = JSON.parse(localStorage.getItem("ml_costs_ean") || "{}");
       setMlSyncedCosts(synced);
+      const storedTaxes = JSON.parse(localStorage.getItem("ml_item_taxes") || "{}");
+      setTaxes(storedTaxes);
     } catch { /* empty localStorage is fine */ }
 
     fetch("/api/dashboard")
@@ -203,11 +187,20 @@ export default function RentabilidadPage() {
       .catch((e: Error) => { setFetchError(e.message); setLoading(false); });
   }, []);
 
+  // ── Tax updater ────────────────────────────────────────
+  const updateTax = (itemId: string, field: keyof ItemTax, value: string) => {
+    setTaxes((prev) => {
+      const current = prev[itemId] ?? { iva: "", ibb: "", otherLabel: "", otherPct: "" };
+      const updated = { ...prev, [itemId]: { ...current, [field]: value } };
+      try { localStorage.setItem("ml_item_taxes", JSON.stringify(updated)); } catch { /* ignore */ }
+      return updated;
+    });
+  };
+
   // ── Enriched items ─────────────────────────────────────
   const enrichedItems = useMemo<EnrichedItem[]>(() => {
     if (!data) return [];
     return (data.profitabilityByItem ?? []).map((item) => {
-      // Synced costs (from EAN match) take priority over direct costs
       const synced = mlSyncedCosts[item.itemId];
       const unitCost = synced?.costo ?? mlCosts[item.itemId] ?? null;
       const totalCost = unitCost !== null ? unitCost * item.unitsSold : null;
@@ -228,43 +221,32 @@ export default function RentabilidadPage() {
     const dir = sortDir === "desc" ? -1 : 1;
     return [...enrichedItems].sort((a, b) => {
       switch (sortCol) {
-        case "title":
-          return dir * a.title.localeCompare(b.title);
-        case "categoryName":
-          return dir * a.categoryName.localeCompare(b.categoryName);
-        case "unitsSold":
-          return dir * (a.unitsSold - b.unitsSold);
-        case "grossRevenue":
-          return dir * (a.grossRevenue - b.grossRevenue);
-        case "totalSaleFees":
-          return dir * (a.totalSaleFees - b.totalSaleFees);
+        case "title":         return dir * a.title.localeCompare(b.title);
+        case "categoryName":  return dir * a.categoryName.localeCompare(b.categoryName);
+        case "unitsSold":     return dir * (a.unitsSold - b.unitsSold);
+        case "grossRevenue":  return dir * (a.grossRevenue - b.grossRevenue);
+        case "totalSaleFees": return dir * (a.totalSaleFees - b.totalSaleFees);
         case "totalCost":
           if (a.totalCost === null && b.totalCost === null) return 0;
-          if (a.totalCost === null) return 1;
-          if (b.totalCost === null) return -1;
+          if (a.totalCost === null) return 1; if (b.totalCost === null) return -1;
           return dir * (a.totalCost - b.totalCost);
         case "realNetProfit":
           if (a.realNetProfit === null && b.realNetProfit === null) return 0;
-          if (a.realNetProfit === null) return 1;
-          if (b.realNetProfit === null) return -1;
+          if (a.realNetProfit === null) return 1; if (b.realNetProfit === null) return -1;
           return dir * (a.realNetProfit - b.realNetProfit);
         case "realMargin":
           if (a.realMargin === null && b.realMargin === null) return 0;
-          if (a.realMargin === null) return 1;
-          if (b.realMargin === null) return -1;
+          if (a.realMargin === null) return 1; if (b.realMargin === null) return -1;
           return dir * (a.realMargin - b.realMargin);
         case "precioLista":
           if (a.precioLista === null && b.precioLista === null) return 0;
-          if (a.precioLista === null) return 1;
-          if (b.precioLista === null) return -1;
+          if (a.precioLista === null) return 1; if (b.precioLista === null) return -1;
           return dir * (a.precioLista - b.precioLista);
         case "avgMlPrice":
           if (a.avgMlPrice === null && b.avgMlPrice === null) return 0;
-          if (a.avgMlPrice === null) return 1;
-          if (b.avgMlPrice === null) return -1;
+          if (a.avgMlPrice === null) return 1; if (b.avgMlPrice === null) return -1;
           return dir * (a.avgMlPrice - b.avgMlPrice);
-        default:
-          return 0;
+        default: return 0;
       }
     });
   }, [enrichedItems, sortCol, sortDir]);
@@ -272,21 +254,15 @@ export default function RentabilidadPage() {
   // ── Category data ──────────────────────────────────────
   const categoryData = useMemo<CategoryRow[]>(() => {
     const map: Record<string, {
-      categoryId: string;
-      categoryName: string;
-      grossRevenue: number;
-      totalSaleFees: number;
-      unitsSold: number;
-      skuCount: number;
-      skusWithCost: number;
-      partialCost: number;
+      categoryId: string; categoryName: string;
+      grossRevenue: number; totalSaleFees: number;
+      unitsSold: number; skuCount: number; skusWithCost: number; partialCost: number;
     }> = {};
 
     for (const item of enrichedItems) {
       if (!map[item.categoryId]) {
         map[item.categoryId] = {
-          categoryId: item.categoryId,
-          categoryName: item.categoryName,
+          categoryId: item.categoryId, categoryName: item.categoryName,
           grossRevenue: 0, totalSaleFees: 0,
           unitsSold: 0, skuCount: 0, skusWithCost: 0, partialCost: 0,
         };
@@ -296,22 +272,15 @@ export default function RentabilidadPage() {
       cat.totalSaleFees += item.totalSaleFees;
       cat.unitsSold += item.unitsSold;
       cat.skuCount++;
-      if (item.totalCost !== null) {
-        cat.partialCost += item.totalCost;
-        cat.skusWithCost++;
-      }
+      if (item.totalCost !== null) { cat.partialCost += item.totalCost; cat.skusWithCost++; }
     }
 
     return Object.values(map)
       .map(({ partialCost, ...cat }) => {
         const allHaveCosts = cat.skusWithCost === cat.skuCount && cat.skuCount > 0;
-        const netProfit = allHaveCosts
-          ? cat.grossRevenue - cat.totalSaleFees - partialCost
-          : null;
-        const margin =
-          netProfit !== null && cat.grossRevenue > 0
-            ? (netProfit / cat.grossRevenue) * 100
-            : null;
+        const netProfit = allHaveCosts ? cat.grossRevenue - cat.totalSaleFees - partialCost : null;
+        const margin = netProfit !== null && cat.grossRevenue > 0
+          ? (netProfit / cat.grossRevenue) * 100 : null;
         return { ...cat, netProfit, margin };
       })
       .sort((a, b) => b.grossRevenue - a.grossRevenue);
@@ -320,11 +289,8 @@ export default function RentabilidadPage() {
   // ── Chart data ─────────────────────────────────────────
   const chartData = categoryData.map((cat) => ({
     name: cat.categoryName,
-    margin:
-      cat.margin ??
-      (cat.grossRevenue > 0
-        ? ((cat.grossRevenue - cat.totalSaleFees) / cat.grossRevenue) * 100
-        : 0),
+    margin: cat.margin ?? (cat.grossRevenue > 0
+      ? ((cat.grossRevenue - cat.totalSaleFees) / cat.grossRevenue) * 100 : 0),
     hasRealMargin: cat.margin !== null,
   }));
 
@@ -336,33 +302,21 @@ export default function RentabilidadPage() {
 
   // ── Shared styles ──────────────────────────────────────
   const cardStyle: React.CSSProperties = {
-    background: "var(--surface)",
-    border: "1px solid var(--border)",
-    borderRadius: "var(--radius-lg)",
-    padding: "24px",
+    background: "var(--surface)", border: "1px solid var(--border)",
+    borderRadius: "var(--radius-lg)", padding: "24px",
   };
 
   const labelStyle: React.CSSProperties = {
-    fontSize: "11px",
-    fontWeight: "600",
-    letterSpacing: "0.06em",
-    textTransform: "uppercase",
-    color: "var(--text-muted)",
-    marginBottom: "6px",
-    display: "block",
-    fontFamily: "var(--font-mono)",
+    fontSize: "11px", fontWeight: "600", letterSpacing: "0.06em",
+    textTransform: "uppercase", color: "var(--text-muted)",
+    marginBottom: "6px", display: "block", fontFamily: "var(--font-mono)",
   };
 
   const inputStyle: React.CSSProperties = {
-    background: "var(--surface-2)",
-    border: "1px solid var(--border)",
-    borderRadius: "var(--radius)",
-    padding: "10px 14px",
-    color: "var(--text)",
-    fontFamily: "var(--font-mono)",
-    fontSize: "14px",
-    outline: "none",
-    width: "100%",
+    background: "var(--surface-2)", border: "1px solid var(--border)",
+    borderRadius: "var(--radius)", padding: "10px 14px",
+    color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "14px",
+    outline: "none", width: "100%",
   };
 
   const set = (field: keyof ProductCalc, value: string | number) =>
@@ -372,18 +326,27 @@ export default function RentabilidadPage() {
   const isProfitable = result.profit > 0;
   const withCostCount = enrichedItems.filter((i) => i.unitCost !== null).length;
 
-  // ── Skeleton rows ──────────────────────────────────────
   const SkeletonRows = () => (
     <>
       {[1, 2, 3, 4, 5].map((i) => (
         <tr key={i}>
-          <td colSpan={8} style={{ padding: "6px 0" }}>
+          <td colSpan={11} style={{ padding: "6px 0" }}>
             <div className="skeleton" style={{ height: "36px", borderRadius: "var(--radius)" }} />
           </td>
         </tr>
       ))}
     </>
   );
+
+  // ── Detail drawer tax calc ─────────────────────────────
+  const drawerTax = selectedItem ? taxes[selectedItem.itemId] ?? { iva: "", ibb: "", otherLabel: "", otherPct: "" } : null;
+  const taxTotal = drawerTax ? (
+    (parseFloat(drawerTax.iva) || 0) +
+    (parseFloat(drawerTax.ibb) || 0) +
+    (parseFloat(drawerTax.otherPct) || 0)
+  ) : 0;
+  const taxAmount = selectedItem ? (taxTotal / 100) * selectedItem.grossRevenue : 0;
+  const netAfterTax = selectedItem?.realNetProfit != null ? selectedItem.realNetProfit - taxAmount : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
@@ -415,16 +378,14 @@ export default function RentabilidadPage() {
               ? "Cargando datos de ventas…"
               : enrichedItems.length === 0
               ? "Sin datos de ventas disponibles"
-              : `${withCostCount} de ${enrichedItems.length} productos con costo cargado`}
+              : `${withCostCount} de ${enrichedItems.length} productos con costo cargado · Hacé click en una fila para ver el detalle`}
           </p>
         </div>
 
         {fetchError && (
           <div style={{
-            padding: "14px 16px",
-            background: "var(--red-dim)",
-            border: "1px solid rgba(255,68,88,0.25)",
-            borderRadius: "var(--radius)",
+            padding: "14px 16px", background: "var(--red-dim)",
+            border: "1px solid rgba(255,68,88,0.25)", borderRadius: "var(--radius)",
             color: "var(--red)", fontSize: "13px", fontFamily: "var(--font-mono)",
           }}>
             Error al cargar datos: {fetchError}
@@ -436,141 +397,161 @@ export default function RentabilidadPage() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
-                  <SortHeader label="Producto"      col="title"        sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                  <SortHeader label="Categoría"    col="categoryName" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                  <SortHeader label="Unidades"      col="unitsSold"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="P. Lista"      col="precioLista"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="P. ML (prom.)" col="avgMlPrice"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Rev. bruto"    col="grossRevenue" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Comisión ML"   col="totalSaleFees" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Costo total"   col="totalCost"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Ganancia neta" col="realNetProfit" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Margen"        col="realMargin"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader label="Producto"         col="title"         sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader label="Categoría"        col="categoryName"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader label="Unidades"         col="unitsSold"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="P. Lista (int.)"  col="precioLista"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="P. ML"            col="avgMlPrice"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Revenue"          col="grossRevenue"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Comisión ML"      col="totalSaleFees" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <th style={{
+                    padding: "8px 12px", textAlign: "right", fontSize: "10px", fontWeight: "600",
+                    letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)",
+                    fontFamily: "var(--font-mono)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap",
+                  }}>
+                    Impuestos
+                  </th>
+                  <SortHeader label="Costo Total"      col="totalCost"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Ganancia Neta"    col="realNetProfit" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Margen"           col="realMargin"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <SkeletonRows />
                 ) : (
-                  sortedItems.map((item) => (
-                    <tr
-                      key={item.itemId}
-                      style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s" }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                    >
-                      {/* Producto */}
-                      <td style={{ padding: "10px 12px", maxWidth: "220px" }}>
-                        <p style={{
-                          fontFamily: "var(--font-display)", fontSize: "13px", fontWeight: "600",
+                  sortedItems.map((item) => {
+                    const itemTax = taxes[item.itemId];
+                    const itemTaxTotal = itemTax
+                      ? (parseFloat(itemTax.iva) || 0) + (parseFloat(itemTax.ibb) || 0) + (parseFloat(itemTax.otherPct) || 0)
+                      : 0;
+                    const commPct = item.grossRevenue > 0
+                      ? (item.totalSaleFees / item.grossRevenue) * 100 : 0;
+
+                    return (
+                      <tr
+                        key={item.itemId}
+                        onClick={() => setSelectedItem(item)}
+                        style={{
+                          borderBottom: "1px solid var(--border)",
+                          transition: "background 0.1s",
+                          cursor: "pointer",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        {/* Producto */}
+                        <td style={{ padding: "10px 12px", maxWidth: "220px" }}>
+                          <p style={{
+                            fontFamily: "var(--font-display)", fontSize: "13px", fontWeight: "600",
+                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          }}>
+                            {item.title}
+                          </p>
+                          <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "2px" }}>
+                            {item.itemId}
+                          </p>
+                        </td>
+
+                        {/* Categoría */}
+                        <td style={{
+                          padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px",
+                          color: "var(--text-muted)", maxWidth: "160px",
                           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                         }}>
-                          {item.title}
-                        </p>
-                        <p style={{
-                          fontFamily: "var(--font-mono)", fontSize: "10px",
-                          color: "var(--text-dim)", marginTop: "2px",
+                          {item.categoryName}
+                        </td>
+
+                        {/* Unidades */}
+                        <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--text-muted)" }}>
+                          {item.unitsSold}
+                        </td>
+
+                        {/* P. Lista (int.) */}
+                        <td style={{
+                          padding: "10px 12px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: "13px",
+                          color: item.precioLista !== null ? "var(--text)" : "var(--text-dim)",
                         }}>
-                          {item.itemId}
-                        </p>
-                      </td>
+                          {item.precioLista !== null ? formatARS(item.precioLista) : "—"}
+                        </td>
 
-                      {/* Categoría */}
-                      <td style={{
-                        padding: "10px 12px",
-                        fontFamily: "var(--font-mono)", fontSize: "12px",
-                        color: "var(--text-muted)",
-                        maxWidth: "160px",
-                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                      }}>
-                        {item.categoryName}
-                      </td>
-
-                      {/* Unidades */}
-                      <td style={{
-                        padding: "10px 12px", textAlign: "right",
-                        fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--text-muted)",
-                      }}>
-                        {item.unitsSold}
-                      </td>
-
-                      {/* Precio lista */}
-                      <td style={{
-                        padding: "10px 12px", textAlign: "right",
-                        fontFamily: "var(--font-mono)", fontSize: "13px",
-                        color: item.precioLista !== null ? "var(--text)" : "var(--text-dim)",
-                      }}>
-                        {item.precioLista !== null ? formatARS(item.precioLista) : "—"}
-                      </td>
-
-                      {/* Precio ML promedio + diff vs lista */}
-                      <td style={{ padding: "10px 12px", textAlign: "right" }}>
-                        {item.avgMlPrice !== null ? (
-                          <div>
-                            <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px" }}>
-                              {formatARS(item.avgMlPrice)}
-                            </span>
-                            {item.precioLista !== null && item.precioLista > 0 && (
-                              <span style={{
-                                display: "block",
-                                fontFamily: "var(--font-mono)", fontSize: "10px",
-                                color: item.avgMlPrice >= item.precioLista ? "var(--green)" : "var(--yellow)",
-                              }}>
-                                {item.avgMlPrice >= item.precioLista ? "+" : ""}
-                                {(((item.avgMlPrice - item.precioLista) / item.precioLista) * 100).toFixed(1)}% vs lista
+                        {/* P. ML */}
+                        <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                          {item.avgMlPrice !== null ? (
+                            <div>
+                              <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px" }}>
+                                {formatARS(item.avgMlPrice)}
                               </span>
-                            )}
-                          </div>
-                        ) : (
-                          <span style={{ color: "var(--text-dim)" }}>—</span>
-                        )}
-                      </td>
+                              {item.precioLista !== null && item.precioLista > 0 && (
+                                <span style={{
+                                  display: "block", fontFamily: "var(--font-mono)", fontSize: "10px",
+                                  color: item.avgMlPrice >= item.precioLista ? "var(--green)" : "var(--yellow)",
+                                }}>
+                                  {item.avgMlPrice >= item.precioLista ? "+" : ""}
+                                  {(((item.avgMlPrice - item.precioLista) / item.precioLista) * 100).toFixed(1)}% vs lista
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span style={{ color: "var(--text-dim)" }}>—</span>
+                          )}
+                        </td>
 
-                      {/* Revenue bruto */}
-                      <td style={{
-                        padding: "10px 12px", textAlign: "right",
-                        fontFamily: "var(--font-mono)", fontSize: "13px",
-                      }}>
-                        {formatARS(item.grossRevenue)}
-                      </td>
+                        {/* Revenue */}
+                        <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: "13px" }}>
+                          {formatARS(item.grossRevenue)}
+                        </td>
 
-                      {/* Comisión ML */}
-                      <td style={{
-                        padding: "10px 12px", textAlign: "right",
-                        fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--red)",
-                      }}>
-                        -{formatARS(item.totalSaleFees)}
-                      </td>
+                        {/* Comisión ML: monto + % */}
+                        <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--red)" }}>
+                            -{formatARS(item.totalSaleFees)}
+                          </span>
+                          <span style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)" }}>
+                            {commPct.toFixed(1)}%
+                          </span>
+                        </td>
 
-                      {/* Costo total */}
-                      <td style={{
-                        padding: "10px 12px", textAlign: "right",
-                        fontFamily: "var(--font-mono)", fontSize: "13px",
-                        color: item.totalCost !== null ? "var(--text)" : "var(--text-dim)",
-                      }}>
-                        {item.totalCost !== null ? `-${formatARS(item.totalCost)}` : "—"}
-                      </td>
+                        {/* Impuestos */}
+                        <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                          <span
+                            title="Hacé click en la fila para configurar impuestos por producto"
+                            style={{
+                              fontFamily: "var(--font-mono)", fontSize: "12px",
+                              color: itemTaxTotal > 0 ? "var(--yellow)" : "var(--text-dim)",
+                              cursor: "help",
+                            }}
+                          >
+                            {itemTaxTotal > 0 ? `${itemTaxTotal.toFixed(1)}%` : "—"}
+                          </span>
+                        </td>
 
-                      {/* Ganancia neta */}
-                      <td style={{
-                        padding: "10px 12px", textAlign: "right",
-                        fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: "600",
-                        color:
-                          item.realNetProfit === null
+                        {/* Costo Total */}
+                        <td style={{
+                          padding: "10px 12px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: "13px",
+                          color: item.totalCost !== null ? "var(--text)" : "var(--text-dim)",
+                        }}>
+                          {item.totalCost !== null ? `-${formatARS(item.totalCost)}` : "—"}
+                        </td>
+
+                        {/* Ganancia Neta */}
+                        <td style={{
+                          padding: "10px 12px", textAlign: "right",
+                          fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: "600",
+                          color: item.realNetProfit === null
                             ? "var(--text-dim)"
-                            : item.realNetProfit >= 0
-                            ? "var(--green)"
-                            : "var(--red)",
-                      }}>
-                        {item.realNetProfit !== null ? formatARS(item.realNetProfit) : "—"}
-                      </td>
+                            : item.realNetProfit >= 0 ? "var(--green)" : "var(--red)",
+                        }}>
+                          {item.realNetProfit !== null ? formatARS(item.realNetProfit) : "—"}
+                        </td>
 
-                      {/* Margen */}
-                      <td style={{ padding: "10px 12px", minWidth: "150px" }}>
-                        <MarginBar margin={item.realMargin} />
-                      </td>
-                    </tr>
-                  ))
+                        {/* Margen */}
+                        <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                          <MarginText margin={item.realMargin} />
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -601,13 +582,8 @@ export default function RentabilidadPage() {
           </p>
         </div>
 
-        {/* Skeleton cards */}
         {loading && (
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))",
-            gap: "12px", marginBottom: "24px",
-          }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: "12px", marginBottom: "24px" }}>
             {[1, 2, 3].map((i) => (
               <div key={i} className="skeleton" style={{ height: "120px", borderRadius: "var(--radius-lg)" }} />
             ))}
@@ -616,57 +592,39 @@ export default function RentabilidadPage() {
 
         {!loading && categoryData.length > 0 && (
           <>
-            {/* Cards */}
             <div style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))",
-              gap: "12px",
-              marginBottom: "24px",
+              display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))",
+              gap: "12px", marginBottom: "24px",
             }}>
               {categoryData.map((cat) => (
                 <div key={cat.categoryId} style={{
-                  background: "var(--surface-2)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-lg)",
-                  padding: "16px",
+                  background: "var(--surface-2)", border: "1px solid var(--border)",
+                  borderRadius: "var(--radius-lg)", padding: "16px",
                 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
                     <p style={{
-                      fontFamily: "var(--font-display)", fontSize: "12px",
-                      fontWeight: "700",
+                      fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "700",
                       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                       flex: 1, marginRight: "8px",
                     }}>
                       {cat.categoryName}
                     </p>
-                    <span style={{
-                      fontFamily: "var(--font-mono)", fontSize: "10px",
-                      color: "var(--text-dim)", whiteSpace: "nowrap",
-                    }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", whiteSpace: "nowrap" }}>
                       {cat.skuCount} SKU{cat.skuCount !== 1 ? "s" : ""}
                     </span>
                   </div>
 
-                  <p style={{
-                    fontFamily: "var(--font-display)", fontSize: "18px",
-                    fontWeight: "800", marginBottom: "2px",
-                  }}>
+                  <p style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: "800", marginBottom: "2px" }}>
                     {formatARS(cat.grossRevenue)}
                   </p>
-                  <p style={{
-                    fontSize: "10px", color: "var(--text-muted)",
-                    fontFamily: "var(--font-mono)", marginBottom: "12px",
-                  }}>
+                  <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginBottom: "12px" }}>
                     revenue bruto · {cat.unitsSold} u.
                   </p>
 
-                  <MarginBar margin={cat.margin} />
+                  <MarginText margin={cat.margin} />
 
                   {cat.margin === null && cat.skusWithCost < cat.skuCount && (
-                    <p style={{
-                      fontSize: "10px", color: "var(--text-dim)",
-                      fontFamily: "var(--font-mono)", marginTop: "6px",
-                    }}>
+                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "6px" }}>
                       {cat.skusWithCost}/{cat.skuCount} con costo
                     </p>
                   )}
@@ -674,13 +632,8 @@ export default function RentabilidadPage() {
               ))}
             </div>
 
-            {/* Bar chart */}
             {chartData.length > 0 && (
-              <div style={{
-                background: "var(--surface-2)",
-                borderRadius: "var(--radius-lg)",
-                padding: "20px 20px 16px",
-              }}>
+              <div style={{ background: "var(--surface-2)", borderRadius: "var(--radius-lg)", padding: "20px 20px 16px" }}>
                 <p style={{ ...labelStyle, marginBottom: "16px" }}>
                   Margen por categoría (%)
                   <span style={{ color: "var(--text-dim)", fontWeight: "400", marginLeft: "8px" }}>
@@ -688,26 +641,16 @@ export default function RentabilidadPage() {
                   </span>
                 </p>
                 <ResponsiveContainer width="100%" height={Math.max(categoryData.length * 52, 100)}>
-                  <BarChart
-                    data={chartData}
-                    layout="vertical"
-                    margin={{ top: 0, right: 48, bottom: 0, left: 8 }}
-                  >
+                  <BarChart data={chartData} layout="vertical" margin={{ top: 0, right: 48, bottom: 0, left: 8 }}>
                     <XAxis
-                      type="number"
-                      domain={[0, "auto"]}
+                      type="number" domain={[0, "auto"]}
                       tick={{ fontFamily: "var(--font-mono)", fontSize: 11, fill: "#666" }}
-                      axisLine={false}
-                      tickLine={false}
-                      unit="%"
+                      axisLine={false} tickLine={false} unit="%"
                     />
                     <YAxis
-                      type="category"
-                      dataKey="name"
-                      width={110}
+                      type="category" dataKey="name" width={110}
                       tick={{ fontFamily: "var(--font-mono)", fontSize: 10, fill: "#666" }}
-                      axisLine={false}
-                      tickLine={false}
+                      axisLine={false} tickLine={false}
                       tickFormatter={(v: string) => v.length > 14 ? v.slice(0, 13) + "…" : v}
                     />
                     <Tooltip
@@ -716,12 +659,8 @@ export default function RentabilidadPage() {
                         "Margen",
                       ]}
                       contentStyle={{
-                        background: "var(--surface)",
-                        border: "1px solid var(--border)",
-                        borderRadius: "6px",
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "12px",
-                        color: "var(--text)",
+                        background: "var(--surface)", border: "1px solid var(--border)",
+                        borderRadius: "6px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text)",
                       }}
                       cursor={{ fill: "rgba(255,255,255,0.03)" }}
                     />
@@ -738,10 +677,7 @@ export default function RentabilidadPage() {
         )}
 
         {!loading && categoryData.length === 0 && !fetchError && (
-          <p style={{
-            color: "var(--text-muted)", fontSize: "13px",
-            fontFamily: "var(--font-mono)", textAlign: "center", padding: "32px",
-          }}>
+          <p style={{ color: "var(--text-muted)", fontSize: "13px", fontFamily: "var(--font-mono)", textAlign: "center", padding: "32px" }}>
             Sin datos de categorías disponibles
           </p>
         )}
@@ -750,10 +686,7 @@ export default function RentabilidadPage() {
       {/* ── SECCIÓN 3: Calculadora ────────────────────── */}
       <div style={cardStyle}>
         <div style={{ marginBottom: "24px" }}>
-          <p style={{
-            fontFamily: "var(--font-display)", fontSize: "16px",
-            fontWeight: "700", letterSpacing: "-0.01em", marginBottom: "4px",
-          }}>
+          <p style={{ fontFamily: "var(--font-display)", fontSize: "16px", fontWeight: "700", letterSpacing: "-0.01em", marginBottom: "4px" }}>
             Calculadora
           </p>
           <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
@@ -761,44 +694,27 @@ export default function RentabilidadPage() {
           </p>
         </div>
 
-        <div
-          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px", alignItems: "start" }}
-          className="rent-grid"
-        >
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px", alignItems: "start" }} className="rent-grid">
           {/* Form */}
           <div style={{
-            background: "var(--surface-2)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-lg)",
-            padding: "24px",
+            background: "var(--surface-2)", border: "1px solid var(--border)",
+            borderRadius: "var(--radius-lg)", padding: "24px",
             display: "flex", flexDirection: "column", gap: "20px",
           }}>
             <div>
               <label style={labelStyle}>Nombre del producto</label>
-              <input
-                type="text" value={form.title}
-                onChange={(e) => set("title", e.target.value)}
-                placeholder="ej: Auriculares Bluetooth JBL"
-                style={inputStyle}
-              />
+              <input type="text" value={form.title} onChange={(e) => set("title", e.target.value)}
+                placeholder="ej: Auriculares Bluetooth JBL" style={inputStyle} />
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
               <div>
                 <label style={labelStyle}>Costo ($)</label>
-                <input
-                  type="number" value={form.costPrice || ""}
-                  onChange={(e) => set("costPrice", parseFloat(e.target.value) || 0)}
-                  placeholder="0" style={inputStyle}
-                />
+                <input type="number" value={form.costPrice || ""} onChange={(e) => set("costPrice", parseFloat(e.target.value) || 0)} placeholder="0" style={inputStyle} />
               </div>
               <div>
                 <label style={labelStyle}>Precio de venta ($)</label>
-                <input
-                  type="number" value={form.salePrice || ""}
-                  onChange={(e) => set("salePrice", parseFloat(e.target.value) || 0)}
-                  placeholder="0" style={inputStyle}
-                />
+                <input type="number" value={form.salePrice || ""} onChange={(e) => set("salePrice", parseFloat(e.target.value) || 0)} placeholder="0" style={inputStyle} />
               </div>
             </div>
 
@@ -823,77 +739,52 @@ export default function RentabilidadPage() {
               </div>
               <div style={{ marginTop: "10px" }}>
                 <label style={labelStyle}>Comisión ML (%)</label>
-                <input
-                  type="number" value={form.mlFeePercent}
-                  onChange={(e) => set("mlFeePercent", parseFloat(e.target.value) || 0)}
-                  style={{ ...inputStyle, width: "120px" }}
-                />
+                <input type="number" value={form.mlFeePercent} onChange={(e) => set("mlFeePercent", parseFloat(e.target.value) || 0)} style={{ ...inputStyle, width: "120px" }} />
               </div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
               <div>
                 <label style={labelStyle}>Envío ($)</label>
-                <input
-                  type="number" value={form.shippingCost || ""}
-                  onChange={(e) => set("shippingCost", parseFloat(e.target.value) || 0)}
-                  placeholder="0" style={inputStyle}
-                />
+                <input type="number" value={form.shippingCost || ""} onChange={(e) => set("shippingCost", parseFloat(e.target.value) || 0)} placeholder="0" style={inputStyle} />
               </div>
               <div>
                 <label style={labelStyle}>Otros costos ($)</label>
-                <input
-                  type="number" value={form.otherCosts || ""}
-                  onChange={(e) => set("otherCosts", parseFloat(e.target.value) || 0)}
-                  placeholder="Empaque, etc." style={inputStyle}
-                />
+                <input type="number" value={form.otherCosts || ""} onChange={(e) => set("otherCosts", parseFloat(e.target.value) || 0)} placeholder="Empaque, etc." style={inputStyle} />
               </div>
             </div>
 
             <div>
               <label style={labelStyle}>Cantidad a vender</label>
-              <input
-                type="number" value={form.quantity}
-                onChange={(e) => set("quantity", parseInt(e.target.value) || 1)}
-                min={1} style={{ ...inputStyle, width: "120px" }}
-              />
+              <input type="number" value={form.quantity} onChange={(e) => set("quantity", parseInt(e.target.value) || 1)} min={1} style={{ ...inputStyle, width: "120px" }} />
             </div>
           </div>
 
           {/* Results */}
           <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-            {/* ROI badge */}
             <div style={{
               background: isProfitable ? "var(--green-dim)" : "var(--red-dim)",
               border: `1px solid ${isProfitable ? "rgba(0,212,160,0.25)" : "rgba(255,68,88,0.25)"}`,
               borderRadius: "var(--radius-lg)", padding: "28px", textAlign: "center",
             }}>
               <p style={{
-                fontSize: "11px", fontWeight: "600", letterSpacing: "0.1em",
-                textTransform: "uppercase",
-                color: isProfitable ? "var(--green)" : "var(--red)",
-                fontFamily: "var(--font-mono)", marginBottom: "12px",
+                fontSize: "11px", fontWeight: "600", letterSpacing: "0.1em", textTransform: "uppercase",
+                color: isProfitable ? "var(--green)" : "var(--red)", fontFamily: "var(--font-mono)", marginBottom: "12px",
               }}>
                 {isProfitable ? "✓ Rentable" : "✗ No rentable"}
               </p>
               <p style={{
                 fontFamily: "var(--font-display)", fontSize: "56px", fontWeight: "800",
-                letterSpacing: "-0.03em",
-                color: isProfitable ? "var(--green)" : "var(--red)",
-                lineHeight: 1, marginBottom: "8px",
+                letterSpacing: "-0.03em", color: isProfitable ? "var(--green)" : "var(--red)", lineHeight: 1, marginBottom: "8px",
               }}>
                 {result.roi.toFixed(1)}%
               </p>
-              <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                ROI por unidad
-              </p>
+              <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>ROI por unidad</p>
             </div>
 
-            {/* Breakdown */}
             <div style={{
               background: "var(--surface-2)", border: "1px solid var(--border)",
-              borderRadius: "var(--radius-lg)", padding: "24px",
-              display: "flex", flexDirection: "column", gap: "14px",
+              borderRadius: "var(--radius-lg)", padding: "24px", display: "flex", flexDirection: "column", gap: "14px",
             }}>
               {[
                 { label: "Precio de venta", value: form.salePrice, color: "var(--text)" },
@@ -903,53 +794,30 @@ export default function RentabilidadPage() {
                 { label: "Costo del producto", value: -form.costPrice, color: "var(--red)" },
               ].map(({ label, value, color }) => (
                 <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                    {label}
-                  </span>
+                  <span style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{label}</span>
                   <span style={{ fontSize: "14px", fontFamily: "var(--font-mono)", fontWeight: "500", color }}>
                     {value < 0 ? "-" : ""}{formatARS(Math.abs(value))}
                   </span>
                 </div>
               ))}
 
-              <div style={{
-                borderTop: "1px solid var(--border)", paddingTop: "14px",
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-              }}>
-                <span style={{ fontFamily: "var(--font-display)", fontSize: "15px", fontWeight: "700" }}>
-                  Ganancia neta
-                </span>
-                <span style={{
-                  fontFamily: "var(--font-mono)", fontSize: "18px", fontWeight: "700",
-                  color: isProfitable ? "var(--green)" : "var(--red)",
-                }}>
+              <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontFamily: "var(--font-display)", fontSize: "15px", fontWeight: "700" }}>Ganancia neta</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: "18px", fontWeight: "700", color: isProfitable ? "var(--green)" : "var(--red)" }}>
                   {formatARS(result.profit)}
                 </span>
               </div>
 
-              <div style={{
-                background: "var(--surface)", borderRadius: "var(--radius)",
-                padding: "14px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px",
-              }}>
+              <div style={{ background: "var(--surface)", borderRadius: "var(--radius)", padding: "14px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
                 <div>
-                  <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "4px" }}>
-                    MARGEN
-                  </p>
-                  <p style={{
-                    fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800",
-                    color: isProfitable ? "var(--yellow)" : "var(--red)",
-                  }}>
+                  <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "4px" }}>MARGEN</p>
+                  <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: isProfitable ? "var(--yellow)" : "var(--red)" }}>
                     {result.margin.toFixed(1)}%
                   </p>
                 </div>
                 <div>
-                  <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "4px" }}>
-                    GANANCIA TOTAL ({form.quantity} u.)
-                  </p>
-                  <p style={{
-                    fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800",
-                    color: isProfitable ? "var(--green)" : "var(--red)",
-                  }}>
+                  <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "4px" }}>GANANCIA TOTAL ({form.quantity} u.)</p>
+                  <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: isProfitable ? "var(--green)" : "var(--red)" }}>
                     {formatARS(result.totalProfit)}
                   </p>
                 </div>
@@ -958,6 +826,227 @@ export default function RentabilidadPage() {
           </div>
         </div>
       </div>
+
+      {/* ── Detail drawer ─────────────────────────────── */}
+      {selectedItem && (
+        <>
+          {/* Backdrop */}
+          <div
+            onClick={() => setSelectedItem(null)}
+            style={{
+              position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+              zIndex: 100, backdropFilter: "blur(2px)",
+            }}
+          />
+
+          {/* Panel */}
+          <div style={{
+            position: "fixed", top: 0, right: 0, bottom: 0,
+            width: "min(440px, 100vw)",
+            background: "var(--surface)", borderLeft: "1px solid var(--border)",
+            zIndex: 101, overflowY: "auto",
+            display: "flex", flexDirection: "column",
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: "24px 24px 20px",
+              borderBottom: "1px solid var(--border)",
+              display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px",
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontFamily: "var(--font-display)", fontSize: "15px", fontWeight: "700", marginBottom: "4px" }}>
+                  {selectedItem.title}
+                </p>
+                <p style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--yellow)" }}>
+                  {selectedItem.itemId}
+                </p>
+              </div>
+              <button
+                onClick={() => setSelectedItem(null)}
+                style={{
+                  background: "var(--surface-2)", border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)", padding: "6px 10px", color: "var(--text-muted)",
+                  fontFamily: "var(--font-mono)", fontSize: "13px", cursor: "pointer", flexShrink: 0,
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "24px", flex: 1 }}>
+              {/* P&L Breakdown */}
+              <div>
+                <p style={{ ...labelStyle, marginBottom: "14px" }}>Desglose P&L</p>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {[
+                    { label: "Revenue bruto", value: selectedItem.grossRevenue, color: "var(--text)", sign: "" },
+                    {
+                      label: `Comisión ML (${selectedItem.grossRevenue > 0 ? ((selectedItem.totalSaleFees / selectedItem.grossRevenue) * 100).toFixed(1) : "0"}%)`,
+                      value: selectedItem.totalSaleFees, color: "var(--red)", sign: "-",
+                    },
+                    ...(selectedItem.totalCost !== null
+                      ? [{ label: `Costo total (${selectedItem.unitsSold} u.)`, value: selectedItem.totalCost, color: "var(--red)", sign: "-" }]
+                      : []),
+                  ].map(({ label, value, color, sign }) => (
+                    <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{label}</span>
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: "500", color }}>
+                        {sign}{formatARS(value)}
+                      </span>
+                    </div>
+                  ))}
+
+                  <div style={{ borderTop: "1px solid var(--border)", paddingTop: "10px", display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: "13px", fontFamily: "var(--font-display)", fontWeight: "700" }}>Ganancia antes de imp.</span>
+                    <span style={{
+                      fontFamily: "var(--font-mono)", fontSize: "14px", fontWeight: "700",
+                      color: selectedItem.realNetProfit === null ? "var(--text-dim)"
+                        : selectedItem.realNetProfit >= 0 ? "var(--green)" : "var(--red)",
+                    }}>
+                      {selectedItem.realNetProfit !== null ? formatARS(selectedItem.realNetProfit) : "—"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Tax inputs */}
+              <div>
+                <p style={{ ...labelStyle, marginBottom: "14px" }}>Impuestos (sobre revenue)</p>
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  {/* IVA */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                    <label style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", flex: 1 }}>IVA</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <input
+                        type="number" min="0" max="100" step="0.1"
+                        value={drawerTax?.iva ?? ""}
+                        placeholder="21"
+                        onChange={(e) => updateTax(selectedItem.itemId, "iva", e.target.value)}
+                        style={{
+                          background: "var(--surface-2)", border: "1px solid var(--border)",
+                          borderRadius: "var(--radius)", padding: "6px 10px",
+                          color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "13px",
+                          outline: "none", width: "80px", textAlign: "right",
+                        }}
+                      />
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>%</span>
+                    </div>
+                  </div>
+
+                  {/* IBB */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                    <label style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", flex: 1 }}>Ingresos Brutos</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <input
+                        type="number" min="0" max="100" step="0.1"
+                        value={drawerTax?.ibb ?? ""}
+                        placeholder="3"
+                        onChange={(e) => updateTax(selectedItem.itemId, "ibb", e.target.value)}
+                        style={{
+                          background: "var(--surface-2)", border: "1px solid var(--border)",
+                          borderRadius: "var(--radius)", padding: "6px 10px",
+                          color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "13px",
+                          outline: "none", width: "80px", textAlign: "right",
+                        }}
+                      />
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>%</span>
+                    </div>
+                  </div>
+
+                  {/* Otros */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                    <input
+                      type="text"
+                      value={drawerTax?.otherLabel ?? ""}
+                      placeholder="Otro impuesto"
+                      onChange={(e) => updateTax(selectedItem.itemId, "otherLabel", e.target.value)}
+                      style={{
+                        background: "var(--surface-2)", border: "1px solid var(--border)",
+                        borderRadius: "var(--radius)", padding: "6px 10px",
+                        color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "13px",
+                        outline: "none", flex: 1,
+                      }}
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                      <input
+                        type="number" min="0" max="100" step="0.1"
+                        value={drawerTax?.otherPct ?? ""}
+                        placeholder="0"
+                        onChange={(e) => updateTax(selectedItem.itemId, "otherPct", e.target.value)}
+                        style={{
+                          background: "var(--surface-2)", border: "1px solid var(--border)",
+                          borderRadius: "var(--radius)", padding: "6px 10px",
+                          color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "13px",
+                          outline: "none", width: "80px", textAlign: "right",
+                        }}
+                      />
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>%</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tax summary */}
+                {taxTotal > 0 && (
+                  <div style={{ marginTop: "16px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+                        Impuestos totales ({taxTotal.toFixed(1)}%)
+                      </span>
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--red)" }}>
+                        -{formatARS(taxAmount)}
+                      </span>
+                    </div>
+                    <div style={{
+                      borderTop: "1px solid var(--border)", paddingTop: "10px",
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                    }}>
+                      <span style={{ fontSize: "14px", fontFamily: "var(--font-display)", fontWeight: "700" }}>
+                        Ganancia neta real
+                      </span>
+                      <span style={{
+                        fontFamily: "var(--font-mono)", fontSize: "16px", fontWeight: "700",
+                        color: netAfterTax === null ? "var(--text-dim)"
+                          : netAfterTax >= 0 ? "var(--green)" : "var(--red)",
+                      }}>
+                        {netAfterTax !== null ? formatARS(netAfterTax) : "—"}
+                      </span>
+                    </div>
+                    {netAfterTax !== null && selectedItem.grossRevenue > 0 && (
+                      <p style={{ fontSize: "11px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", textAlign: "right" }}>
+                        Margen neto: {((netAfterTax / selectedItem.grossRevenue) * 100).toFixed(1)}%
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Unit info */}
+              {selectedItem.unitCost !== null && (
+                <div style={{
+                  background: "var(--surface-2)", border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)", padding: "14px",
+                  display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px",
+                }}>
+                  <div>
+                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "4px" }}>COSTO UNITARIO</p>
+                    <p style={{ fontFamily: "var(--font-mono)", fontSize: "15px", fontWeight: "700", color: "var(--text)" }}>
+                      {formatARS(selectedItem.unitCost)}
+                    </p>
+                  </div>
+                  {selectedItem.avgMlPrice !== null && (
+                    <div>
+                      <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "4px" }}>P. ML PROM.</p>
+                      <p style={{ fontFamily: "var(--font-mono)", fontSize: "15px", fontWeight: "700", color: "var(--text)" }}>
+                        {formatARS(selectedItem.avgMlPrice)}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
 
       <style>{`
         @media (max-width: 768px) {

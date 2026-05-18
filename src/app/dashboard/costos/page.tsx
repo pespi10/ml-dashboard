@@ -44,6 +44,7 @@ export type SyncedCostEntry = {
   titulo_ml: string | null;
   costo: number;
   precio_lista: number;
+  match_method?: MatchMethod;
 };
 
 // ── CSV/XLSX parsers ─────────────────────────────────────────────────────────
@@ -471,6 +472,7 @@ export default function CostosPage() {
           titulo_ml: r.titulo_ml,
           costo: r.costo,
           precio_lista: r.precio_lista,
+          match_method: r.match_method,
         };
       }
     }
@@ -796,8 +798,8 @@ export default function CostosPage() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
-                  {["MLA ID", "Código", "Nombre / Título ML", "EAN", "Costo", "P. Lista", ""].map((h, j) => (
-                    <th key={j} style={{ ...labelStyle, padding: "8px 12px", textAlign: j >= 4 && j < 6 ? "right" : "left", borderBottom: "1px solid var(--border)" }}>{h}</th>
+                  {["Código", "Nombre", "EAN", "Costo", "P. Lista", "Match", ""].map((h, j) => (
+                    <th key={j} style={{ ...labelStyle, padding: "8px 12px", textAlign: j >= 3 && j < 5 ? "right" : "left", borderBottom: "1px solid var(--border)" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -807,14 +809,20 @@ export default function CostosPage() {
                     onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
                     onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                   >
-                    <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--yellow)" }}>{mlId}</td>
                     <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--text-dim)" }}>{entry.codigo || "—"}</td>
                     <td style={{ padding: "10px 12px", maxWidth: "200px" }}>
-                      <p style={{ fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.titulo_ml ?? entry.nombre}</p>
+                      <p style={{ fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.nombre}</p>
                     </td>
                     <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--text-dim)" }}>{entry.ean}</td>
                     <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--green)", fontWeight: "600", textAlign: "right" }}>{formatARS(entry.costo)}</td>
                     <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text)", textAlign: "right" }}>{entry.precio_lista > 0 ? formatARS(entry.precio_lista) : "—"}</td>
+                    <td style={{ padding: "10px 12px" }}>
+                      {entry.match_method && entry.match_method !== "not_found" && (
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: entry.match_method === "gtin" ? "var(--green)" : "var(--yellow)", background: "var(--surface-2)", border: `1px solid ${entry.match_method === "gtin" ? "rgba(0,212,160,0.25)" : "rgba(255,230,0,0.2)"}`, borderRadius: "4px", padding: "2px 7px" }}>
+                          {entry.match_method}
+                        </span>
+                      )}
+                    </td>
                     <td style={{ padding: "10px 12px", textAlign: "right" }}>
                       <button
                         onClick={() => {
