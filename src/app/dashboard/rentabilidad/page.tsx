@@ -27,11 +27,19 @@ interface DashboardData {
   profitabilityByItem: ProfitItem[];
 }
 
+interface SyncedCostEntry {
+  costo_sin_iva: number;
+  costo_con_iva: number;
+  precio_lista: number;
+}
+
 interface EnrichedItem extends ProfitItem {
   unitCost: number | null;
   totalCost: number | null;
   realNetProfit: number | null;
   realMargin: number | null;
+  precioLista: number | null;
+  avgMlPrice: number | null;
 }
 
 interface CategoryRow {
@@ -54,7 +62,9 @@ type SortCol =
   | "totalSaleFees"
   | "totalCost"
   | "realNetProfit"
-  | "realMargin";
+  | "realMargin"
+  | "precioLista"
+  | "avgMlPrice";
 
 // ── Calculator types ───────────────────────────────────────────────────
 
@@ -167,6 +177,7 @@ export default function RentabilidadPage() {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [mlCosts, setMlCosts] = useState<Record<string, number>>({});
+  const [mlSyncedCosts, setMlSyncedCosts] = useState<Record<string, SyncedCostEntry>>({});
 
   // ── Sort state ─────────────────────────────────────────
   const [sortCol, setSortCol] = useState<SortCol>("realNetProfit");
@@ -183,6 +194,8 @@ export default function RentabilidadPage() {
     try {
       const stored = JSON.parse(localStorage.getItem("ml_costs") || "{}");
       setMlCosts(stored);
+      const synced = JSON.parse(localStorage.getItem("ml_synced_costs") || "{}");
+      setMlSyncedCosts(synced);
     } catch { /* empty localStorage is fine */ }
 
     fetch("/api/dashboard")
@@ -195,7 +208,9 @@ export default function RentabilidadPage() {
   const enrichedItems = useMemo<EnrichedItem[]>(() => {
     if (!data) return [];
     return (data.profitabilityByItem ?? []).map((item) => {
-      const unitCost = mlCosts[item.itemId] ?? null;
+      // Synced costs (from EAN match) take priority over direct costs
+      const synced = mlSyncedCosts[item.itemId];
+      const unitCost = synced?.costo_con_iva ?? mlCosts[item.itemId] ?? null;
       const totalCost = unitCost !== null ? unitCost * item.unitsSold : null;
       const realNetProfit =
         totalCost !== null ? item.grossRevenue - item.totalSaleFees - totalCost : null;
@@ -203,9 +218,11 @@ export default function RentabilidadPage() {
         realNetProfit !== null && item.grossRevenue > 0
           ? (realNetProfit / item.grossRevenue) * 100
           : null;
-      return { ...item, unitCost, totalCost, realNetProfit, realMargin };
+      const precioLista = synced?.precio_lista ?? null;
+      const avgMlPrice = item.unitsSold > 0 ? item.grossRevenue / item.unitsSold : null;
+      return { ...item, unitCost, totalCost, realNetProfit, realMargin, precioLista, avgMlPrice };
     });
-  }, [data, mlCosts]);
+  }, [data, mlCosts, mlSyncedCosts]);
 
   // ── Sorted items ───────────────────────────────────────
   const sortedItems = useMemo(() => {
@@ -237,6 +254,16 @@ export default function RentabilidadPage() {
           if (a.realMargin === null) return 1;
           if (b.realMargin === null) return -1;
           return dir * (a.realMargin - b.realMargin);
+        case "precioLista":
+          if (a.precioLista === null && b.precioLista === null) return 0;
+          if (a.precioLista === null) return 1;
+          if (b.precioLista === null) return -1;
+          return dir * (a.precioLista - b.precioLista);
+        case "avgMlPrice":
+          if (a.avgMlPrice === null && b.avgMlPrice === null) return 0;
+          if (a.avgMlPrice === null) return 1;
+          if (b.avgMlPrice === null) return -1;
+          return dir * (a.avgMlPrice - b.avgMlPrice);
         default:
           return 0;
       }
@@ -413,6 +440,8 @@ export default function RentabilidadPage() {
                   <SortHeader label="Producto"      col="title"        sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
                   <SortHeader label="Categoría"    col="categoryName" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
                   <SortHeader label="Unidades"      col="unitsSold"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="P. Lista"      col="precioLista"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="P. ML (prom.)" col="avgMlPrice"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                   <SortHeader label="Rev. bruto"    col="grossRevenue" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                   <SortHeader label="Comisión ML"   col="totalSaleFees" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                   <SortHeader label="Costo total"   col="totalCost"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
@@ -464,6 +493,38 @@ export default function RentabilidadPage() {
                         fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--text-muted)",
                       }}>
                         {item.unitsSold}
+                      </td>
+
+                      {/* Precio lista */}
+                      <td style={{
+                        padding: "10px 12px", textAlign: "right",
+                        fontFamily: "var(--font-mono)", fontSize: "13px",
+                        color: item.precioLista !== null ? "var(--text)" : "var(--text-dim)",
+                      }}>
+                        {item.precioLista !== null ? formatARS(item.precioLista) : "—"}
+                      </td>
+
+                      {/* Precio ML promedio + diff vs lista */}
+                      <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                        {item.avgMlPrice !== null ? (
+                          <div>
+                            <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px" }}>
+                              {formatARS(item.avgMlPrice)}
+                            </span>
+                            {item.precioLista !== null && item.precioLista > 0 && (
+                              <span style={{
+                                display: "block",
+                                fontFamily: "var(--font-mono)", fontSize: "10px",
+                                color: item.avgMlPrice >= item.precioLista ? "var(--green)" : "var(--yellow)",
+                              }}>
+                                {item.avgMlPrice >= item.precioLista ? "+" : ""}
+                                {(((item.avgMlPrice - item.precioLista) / item.precioLista) * 100).toFixed(1)}% vs lista
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span style={{ color: "var(--text-dim)" }}>—</span>
+                        )}
                       </td>
 
                       {/* Revenue bruto */}
