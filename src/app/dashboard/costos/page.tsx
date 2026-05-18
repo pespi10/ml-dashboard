@@ -405,7 +405,6 @@ export default function CostosPage() {
 
   const runSync = async () => {
     if (!eanRows.length) return;
-    const BATCH = 10;
     const allResults: SyncResult[] = [];
     let totalMatched = 0;
     let totalNotFound = 0;
@@ -420,32 +419,30 @@ export default function CostosPage() {
 
     setSyncProgress({ status: "running", total: eanRows.length, processed: 0, matched: 0, notFound: 0, results: [] });
 
-    for (let i = 0; i < eanRows.length; i += BATCH) {
-      const batch = eanRows.slice(i, i + BATCH);
-      try {
-        const res = await fetch("/api/costs/sync", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items: batch }),
-        });
-        const data = await res.json();
-        allResults.push(...(data.results ?? []));
-        totalMatched += data.matched ?? 0;
-        totalNotFound += data.notFound ?? 0;
-      } catch {
-        totalNotFound += batch.length;
-        allResults.push(...batch.map(item => ({ ...item, ml_id: null, titulo_ml: null, found: false })));
-      }
-
-      setSyncProgress({
-        status: "running",
-        total: eanRows.length,
-        processed: Math.min(i + BATCH, eanRows.length),
-        matched: totalMatched,
-        notFound: totalNotFound,
-        results: [...allResults],
+    // Send all items in one request — the server builds the GTIN map once
+    try {
+      const res = await fetch("/api/costs/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: eanRows }),
       });
+      const data = await res.json();
+      allResults.push(...(data.results ?? []));
+      totalMatched = data.matched ?? 0;
+      totalNotFound = data.notFound ?? 0;
+    } catch {
+      totalNotFound = eanRows.length;
+      allResults.push(...eanRows.map(item => ({ ...item, ml_id: null, titulo_ml: null, found: false })));
     }
+
+    setSyncProgress({
+      status: "running",
+      total: eanRows.length,
+      processed: eanRows.length,
+      matched: totalMatched,
+      notFound: totalNotFound,
+      results: [...allResults],
+    });
 
     // Reemplaza completamente — limpiar datos anteriores
     const newCosts: Record<string, number> = {};
