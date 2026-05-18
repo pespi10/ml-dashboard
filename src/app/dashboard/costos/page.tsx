@@ -439,10 +439,13 @@ export default function CostosPage() {
       }
     }
 
+    localStorage.removeItem("ml_costs_ean");
+    localStorage.removeItem("ml_costs");
+    localStorage.removeItem("ml_costs_titles");
     localStorage.setItem("ml_costs", JSON.stringify(newCosts));
     localStorage.setItem("ml_costs_titles", JSON.stringify(newTitles));
     localStorage.setItem("ml_costs_ean", JSON.stringify(newSynced));
-    localStorage.removeItem("ml_synced_costs"); // elimina clave vieja
+    localStorage.removeItem("ml_synced_costs");
     setCosts(newCosts); setTitles(newTitles); setSyncedCosts(newSynced);
 
     setSyncProgress(prev => prev ? { ...prev, status: "done", processed: eanRows.length, matched: totalMatched, notFound: totalNotFound, results: allResults } : null);
