@@ -6,6 +6,7 @@ import {
   getDashboardOverview,
   getDashboardSalesStats,
   getDashboardStockStats,
+  getProfitabilityStats,
   isTokenExpired,
   refreshAccessToken,
 } from "@/lib/ml-api";
@@ -47,6 +48,8 @@ export async function GET(request: NextRequest) {
       data = await getDashboardSalesStats(activeTokens, page, limit);
     } else if (section === "stock") {
       data = await getDashboardStockStats(activeTokens, page, limit);
+    } else if (section === "profitability") {
+      data = await getProfitabilityStats(activeTokens);
     } else {
       data = await getDashboardStats(activeTokens, page, limit);
     }

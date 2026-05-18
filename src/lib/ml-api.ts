@@ -445,6 +445,29 @@ async function getCategoryName(categoryId: string, tokens: MLTokens): Promise<st
   }
 }
 
+// ── Full profitability (all orders in window) ─────────────────────────
+
+export async function getProfitabilityStats(
+  tokens: MLTokens,
+  days = 30
+): Promise<{ profitabilityByItem: ProfitabilityItem[] }> {
+  const orders = await getOrders(tokens, days);
+  const profByItem = getProfitabilityByItem(orders);
+
+  const catIds = Array.from(new Set(profByItem.map((i) => i.categoryId)));
+  const resolvedNames = await Promise.all(
+    catIds.map((id) => getCategoryName(id, tokens))
+  );
+  const catNameMap = Object.fromEntries(catIds.map((id, i) => [id, resolvedNames[i]]));
+
+  return {
+    profitabilityByItem: profByItem.map((i) => ({
+      ...i,
+      categoryName: catNameMap[i.categoryId] ?? i.categoryId,
+    })),
+  };
+}
+
 // ── Dashboard stats ───────────────────────────────────────────────────
 
 export async function getDashboardOverview(tokens: MLTokens): Promise<DashboardOverview> {

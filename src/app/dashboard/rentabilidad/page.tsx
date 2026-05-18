@@ -171,7 +171,7 @@ export default function RentabilidadPage() {
       setMlSyncedCosts(synced);
     } catch { /* empty localStorage is fine */ }
 
-    fetch("/api/dashboard")
+    fetch("/api/dashboard?section=profitability")
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((d: DashboardData) => { setData(d); setLoading(false); })
       .catch((e: Error) => { setFetchError(e.message); setLoading(false); });
@@ -353,7 +353,7 @@ export default function RentabilidadPage() {
               ? "Cargando datos de ventas…"
               : enrichedItems.length === 0
               ? "Sin datos de ventas disponibles"
-              : `${withCostCount} de ${enrichedItems.length} productos con costo cargado · Hacé click en una fila para ver el detalle`}
+              : `${enrichedItems.length} productos vendidos · ${withCostCount} con costo cargado · Hacé click para ver detalle`}
           </p>
         </div>
 
