@@ -1,17 +1,21 @@
 // src/app/api/dashboard/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { getDashboardStats, isTokenExpired, refreshAccessToken } from "@/lib/ml-api";
+import {
+  getDashboardStats,
+  getDashboardOverview,
+  isTokenExpired,
+  refreshAccessToken,
+} from "@/lib/ml-api";
 import { buildSessionCookieValue, SESSION_COOKIE_OPTIONS } from "@/lib/session";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const tokens = getSession();
 
   if (!tokens) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Refresh si está por vencer
   let activeTokens = tokens;
   let refreshed = false;
   if (isTokenExpired(tokens)) {
@@ -23,11 +27,18 @@ export async function GET() {
     }
   }
 
-  try {
-    const stats = await getDashboardStats(activeTokens);
-    const response = NextResponse.json(stats);
+  const { searchParams } = request.nextUrl;
+  const isOverview = searchParams.get("overview") === "1";
+  const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
+  const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") || "50", 10)));
 
-    // Si refrescamos, actualizamos la cookie
+  try {
+    const data = isOverview
+      ? await getDashboardOverview(activeTokens)
+      : await getDashboardStats(activeTokens, page, limit);
+
+    const response = NextResponse.json(data);
+
     if (refreshed) {
       response.cookies.set({
         ...SESSION_COOKIE_OPTIONS,

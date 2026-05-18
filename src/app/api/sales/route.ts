@@ -1,10 +1,10 @@
 // src/app/api/sales/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { getOrders, isTokenExpired, refreshAccessToken } from "@/lib/ml-api";
+import { getOrdersPage, isTokenExpired, refreshAccessToken } from "@/lib/ml-api";
 import { buildSessionCookieValue, SESSION_COOKIE_OPTIONS } from "@/lib/session";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const tokens = getSession();
   if (!tokens) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -19,9 +19,13 @@ export async function GET() {
     }
   }
 
+  const { searchParams } = request.nextUrl;
+  const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
+  const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") || "50", 10)));
+
   try {
-    const orders = await getOrders(activeTokens, 30);
-    const response = NextResponse.json(orders);
+    const data = await getOrdersPage(activeTokens, page, limit, 30);
+    const response = NextResponse.json(data);
     if (refreshed) {
       response.cookies.set({ ...SESSION_COOKIE_OPTIONS, value: buildSessionCookieValue(activeTokens) });
     }

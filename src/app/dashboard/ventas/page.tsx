@@ -4,17 +4,20 @@
 import { useEffect, useState } from "react";
 import { formatARS } from "@/lib/ml-api";
 
+interface OrderItem {
+  item: { id: string; title: string };
+  quantity: number;
+  unit_price: number;
+  sale_fee: number;
+}
+
 interface Order {
   id: number;
   date_created: string;
   status: string;
   total_amount: number;
   currency_id: string;
-  order_items: {
-    item: { id: string; title: string };
-    quantity: number;
-    unit_price: number;
-  }[];
+  order_items: OrderItem[];
   buyer: { id: number; nickname: string };
 }
 
@@ -26,19 +29,48 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   delivered: { label: "Entregado", color: "var(--green)" },
 };
 
+const COLS = "72px 1fr 130px 90px 80px 90px 90px";
+
 export default function VentasPage() {
   const [orders, setOrders] = useState<Order[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [costs, setCosts] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    fetch("/api/sales")
+    const stored = localStorage.getItem("ml_costs");
+    if (stored) setCosts(JSON.parse(stored));
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/sales?page=1&limit=50")
       .then((r) => r.json())
-      .then(setOrders)
+      .then((data) => {
+        setOrders(data.results ?? []);
+        setTotal(data.total ?? 0);
+        setPage(1);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
 
+  const loadMore = () => {
+    const nextPage = page + 1;
+    setLoadingMore(true);
+    fetch(`/api/sales?page=${nextPage}&limit=50`)
+      .then((r) => r.json())
+      .then((data) => {
+        setOrders((prev) => [...prev, ...(data.results ?? [])]);
+        setPage(nextPage);
+      })
+      .catch(console.error)
+      .finally(() => setLoadingMore(false));
+  };
+
   const totalGMV = orders.reduce((s, o) => s + o.total_amount, 0);
+  const hasMore = orders.length < total;
 
   return (
     <div>
@@ -52,7 +84,8 @@ export default function VentasPage() {
             fontWeight: "800", letterSpacing: "-0.02em", marginBottom: "4px",
           }}>Ventas</h1>
           <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-            Últimos 30 días · {orders.length} órdenes
+            Últimos 30 días ·{" "}
+            {loading ? "—" : `Mostrando ${orders.length} de ${total} órdenes`}
           </p>
         </div>
         <div style={{
@@ -63,7 +96,7 @@ export default function VentasPage() {
           textAlign: "right",
         }}>
           <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginBottom: "2px" }}>
-            GMV TOTAL
+            GMV CARGADO
           </p>
           <p style={{
             fontFamily: "var(--font-display)", fontSize: "22px",
@@ -81,8 +114,8 @@ export default function VentasPage() {
         {/* Header */}
         <div className="sales-header" style={{
           display: "grid",
-          gridTemplateColumns: "80px 1fr 140px 100px 100px",
-          gap: "16px",
+          gridTemplateColumns: COLS,
+          gap: "12px",
           padding: "12px 20px",
           borderBottom: "1px solid var(--border)",
           fontSize: "10px",
@@ -95,7 +128,9 @@ export default function VentasPage() {
           <span>ID</span>
           <span>Producto</span>
           <span>Comprador</span>
-          <span>Total</span>
+          <span style={{ textAlign: "right" }}>Precio</span>
+          <span style={{ textAlign: "right" }}>Comisión</span>
+          <span style={{ textAlign: "right" }}>Ganancia</span>
           <span>Estado</span>
         </div>
 
@@ -116,14 +151,19 @@ export default function VentasPage() {
         {!loading && orders.map((order, i) => {
           const st = STATUS_LABEL[order.status] || { label: order.status, color: "var(--text-dim)" };
           const firstItem = order.order_items[0];
+          const unitPrice = firstItem?.unit_price ?? 0;
+          const saleFee = order.order_items.reduce((s, oi) => s + (oi.sale_fee ?? 0), 0);
+          const itemId = firstItem?.item.id ?? "";
+          const cost = costs[itemId];
+          const profit = cost != null ? unitPrice - saleFee - cost * (firstItem?.quantity ?? 1) : null;
 
           return (
             <div
               key={order.id}
               style={{
                 display: "grid",
-                gridTemplateColumns: "80px 1fr 140px 100px 100px",
-                gap: "16px",
+                gridTemplateColumns: COLS,
+                gap: "12px",
                 padding: "14px 20px",
                 borderBottom: i < orders.length - 1 ? "1px solid var(--border)" : "none",
                 alignItems: "center",
@@ -132,10 +172,9 @@ export default function VentasPage() {
               onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
             >
-              <span style={{
-                fontSize: "11px", fontFamily: "var(--font-mono)",
-                color: "var(--text-dim)",
-              }}>#{order.id.toString().slice(-6)}</span>
+              <span style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--text-dim)" }}>
+                #{order.id.toString().slice(-6)}
+              </span>
 
               <div>
                 <p style={{
@@ -155,18 +194,30 @@ export default function VentasPage() {
               </div>
 
               <span style={{
-                fontSize: "12px", fontFamily: "var(--font-mono)",
-                color: "var(--text-muted)",
+                fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--text-muted)",
                 overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
               }}>
                 {order.buyer.nickname}
               </span>
 
+              <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--text)", textAlign: "right" }}>
+                {formatARS(unitPrice)}
+              </span>
+
+              <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--red)", textAlign: "right" }}>
+                {saleFee > 0 ? formatARS(saleFee) : "—"}
+              </span>
+
               <span style={{
-                fontSize: "13px", fontFamily: "var(--font-mono)",
-                fontWeight: "600", color: "var(--text)",
+                fontSize: "12px", fontFamily: "var(--font-mono)", textAlign: "right",
+                fontWeight: profit != null ? "600" : "400",
+                color: profit == null
+                  ? "var(--text-dim)"
+                  : profit >= 0
+                    ? "var(--green)"
+                    : "var(--red)",
               }}>
-                {formatARS(order.total_amount)}
+                {profit == null ? "—" : formatARS(profit)}
               </span>
 
               <span style={{
@@ -180,14 +231,42 @@ export default function VentasPage() {
             </div>
           );
         })}
+
+        {!loading && hasMore && (
+          <div style={{
+            padding: "20px",
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "16px",
+          }}>
+            <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+              {orders.length} de {total} órdenes cargadas
+            </span>
+            <button
+              onClick={loadMore}
+              disabled={loadingMore}
+              style={{
+                background: "var(--surface-2)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                padding: "8px 20px",
+                color: loadingMore ? "var(--text-dim)" : "var(--text)",
+                fontFamily: "var(--font-mono)",
+                fontSize: "12px",
+                cursor: loadingMore ? "not-allowed" : "pointer",
+              }}
+            >
+              {loadingMore ? "Cargando..." : "Cargar más"}
+            </button>
+          </div>
+        )}
       </div>
 
       <style>{`
-        @media (max-width: 640px) {
+        @media (max-width: 768px) {
           .sales-header { display: none !important; }
-          div[style*="gridTemplateColumns: 80px"] {
-            grid-template-columns: 1fr auto !important;
-          }
         }
       `}</style>
     </div>
