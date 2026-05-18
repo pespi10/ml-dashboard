@@ -44,17 +44,12 @@ export async function GET() {
 
     const orderId = search.results[0].id;
 
-    // Fetch full order detail and payments in parallel
-    const [orderDetail, payments] = await Promise.all([
-      mlGet<unknown>(`/orders/${orderId}`, accessToken),
-      mlGet<unknown>(`/orders/${orderId}/payments`, accessToken),
-    ]);
+    const order = await mlGet<unknown>(`/orders/${orderId}`, accessToken);
 
     return NextResponse.json({
       orderId,
       totalOrders: search.paging.total,
-      order: orderDetail,
-      payments,
+      order,
     });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 502 });
