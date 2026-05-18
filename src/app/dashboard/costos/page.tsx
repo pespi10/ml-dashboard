@@ -13,8 +13,7 @@ type EanRow = {
   ean: string;
   codigo: string;
   nombre: string;
-  costo_sin_iva: number;
-  costo_con_iva: number;
+  costo: number;
   precio_lista: number;
 };
 
@@ -38,8 +37,7 @@ export type SyncedCostEntry = {
   codigo: string;
   nombre: string;
   titulo_ml: string | null;
-  costo_sin_iva: number;
-  costo_con_iva: number;
+  costo: number;
   precio_lista: number;
 };
 
@@ -157,13 +155,11 @@ function splitCsvLine(line: string, delim: string): string[] {
 function extractEanRows(headers: string[], dataRows: string[][]): EanRow[] {
   const map = buildColMap(headers);
 
-  // Columnas requeridas — orden de prioridad para cada campo
-  const iEan    = colIdx(map, "ean", "barcode", "codigo_barra", "cod_barra", "gtin");
-  const iCod    = colIdx(map, "codigo", "sku", "cod", "id", "referencia");
-  const iNom    = colIdx(map, "nombre", "descripcion", "producto", "name", "titulo");
-  const iSin    = colIdx(map, "costo_sin_iva", "precio_sin_iva", "costo_neto", "costo_s_iva");
-  const iCon    = colIdx(map, "costo_con_iva", "precio_costo", "costo_c_iva");
-  const iLista  = colIdx(map, "precio_lista", "lista", "pvp", "precio_publico", "p_lista");
+  const iEan   = colIdx(map, "ean", "barcode", "codigo_barra", "cod_barra", "gtin");
+  const iCod   = colIdx(map, "codigo", "sku", "cod", "id", "referencia");
+  const iNom   = colIdx(map, "nombre", "descripcion", "producto", "name", "titulo");
+  const iCosto = colIdx(map, "costo", "precio_costo", "costo_neto");
+  const iLista = colIdx(map, "precio_lista", "lista", "pvp", "precio_publico", "p_lista");
 
   if (iEan === -1) return []; // columna EAN obligatoria
 
@@ -171,15 +167,14 @@ function extractEanRows(headers: string[], dataRows: string[][]): EanRow[] {
   for (const cols of dataRows) {
     const ean = String(cols[iEan] ?? "").replace(/\D/g, "");
     if (!ean) continue;
-    const costo_con_iva = parseNum(cols[iCon]);
-    if (costo_con_iva <= 0) continue;
+    const costo = parseNum(iCosto >= 0 ? cols[iCosto] : undefined);
+    if (costo <= 0) continue;
     rows.push({
       ean,
-      codigo:       iCod   >= 0 ? (cols[iCod]   ?? "").trim() : "",
-      nombre:       iNom   >= 0 ? (cols[iNom]   ?? "").trim() : "",
-      costo_sin_iva: parseNum(iSin >= 0 ? cols[iSin] : undefined),
-      costo_con_iva,
-      precio_lista:  parseNum(iLista >= 0 ? cols[iLista] : undefined),
+      codigo:      iCod   >= 0 ? (cols[iCod]   ?? "").trim() : "",
+      nombre:      iNom   >= 0 ? (cols[iNom]   ?? "").trim() : "",
+      costo,
+      precio_lista: parseNum(iLista >= 0 ? cols[iLista] : undefined),
     });
   }
   return rows;
@@ -350,7 +345,7 @@ export default function CostosPage() {
   // ── EAN sync handlers ─────────────────────────────────────────────────────
 
   const downloadEanTemplate = () => {
-    const csv = "codigo,nombre,ean,costo_sin_iva,iva_21,costo_con_iva,precio_lista\nSKU001,Auriculares JBL,7898000000001,12397,2603,15000,22000\n";
+    const csv = "codigo,nombre,ean,costo,precio_lista\nSKU001,Auriculares JBL,7898000000001,15000,22000\n";
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "plantilla_ean.csv"; a.click();
@@ -424,22 +419,21 @@ export default function CostosPage() {
       });
     }
 
-    // Persist matched items to localStorage — reemplaza completamente el set anterior
-    const newCosts = { ...costs };
-    const newTitles = { ...titles };
-    const newSynced: Record<string, SyncedCostEntry> = {}; // fresh — no merge con datos viejos mal mapeados
+    // Reemplaza completamente — limpiar datos anteriores
+    const newCosts: Record<string, number> = {};
+    const newTitles: Record<string, string> = {};
+    const newSynced: Record<string, SyncedCostEntry> = {};
 
     for (const r of allResults) {
       if (r.found && r.ml_id) {
-        newCosts[r.ml_id] = r.costo_con_iva;
+        newCosts[r.ml_id] = r.costo;
         newTitles[r.ml_id] = r.titulo_ml ?? r.nombre;
         newSynced[r.ml_id] = {
           ean: r.ean,
           codigo: r.codigo,
           nombre: r.nombre,
           titulo_ml: r.titulo_ml,
-          costo_sin_iva: r.costo_sin_iva,
-          costo_con_iva: r.costo_con_iva,
+          costo: r.costo,
           precio_lista: r.precio_lista,
         };
       }
@@ -614,7 +608,7 @@ export default function CostosPage() {
             <div style={{ marginTop: "14px", padding: "12px 16px", background: "var(--surface-2)", borderRadius: "var(--radius)" }}>
               <p style={{ ...labelStyle, marginBottom: "8px" }}>Columnas esperadas:</p>
               <code style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--yellow)", background: "rgba(255,230,0,0.07)", padding: "4px 10px", borderRadius: "4px", display: "block" }}>
-                codigo · nombre · ean · costo_sin_iva · iva_21 · costo_con_iva · precio_lista
+                codigo · nombre · ean · costo · precio_lista
               </code>
               <p style={{ fontSize: "11px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "6px" }}>
                 También detecta encabezados automáticamente si el orden varía
@@ -655,7 +649,7 @@ export default function CostosPage() {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
-                    {["Código", "Nombre", "EAN", "Costo s/IVA", "Costo c/IVA", "P. Lista"].map((h, j) => (
+                    {["Código", "Nombre", "EAN", "Costo", "Precio Lista"].map((h, j) => (
                       <th key={j} style={{ ...labelStyle, padding: "8px 12px", textAlign: j >= 3 ? "right" : "left", borderBottom: "1px solid var(--border)" }}>{h}</th>
                     ))}
                   </tr>
@@ -666,8 +660,7 @@ export default function CostosPage() {
                       <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-dim)" }}>{row.codigo || "—"}</td>
                       <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-muted)", maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.nombre || "—"}</td>
                       <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--yellow)" }}>{row.ean}</td>
-                      <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-muted)", textAlign: "right" }}>{row.costo_sin_iva > 0 ? formatARS(row.costo_sin_iva) : "—"}</td>
-                      <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--green)", fontWeight: "600", textAlign: "right" }}>{formatARS(row.costo_con_iva)}</td>
+                      <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--green)", fontWeight: "600", textAlign: "right" }}>{formatARS(row.costo)}</td>
                       <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text)", textAlign: "right" }}>{row.precio_lista > 0 ? formatARS(row.precio_lista) : "—"}</td>
                     </tr>
                   ))}
@@ -754,8 +747,8 @@ export default function CostosPage() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
-                  {["MLA ID", "Código", "Nombre / Título ML", "EAN", "Costo s/IVA", "Costo c/IVA", "P. Lista", ""].map((h, j) => (
-                    <th key={j} style={{ ...labelStyle, padding: "8px 12px", textAlign: j >= 4 && j < 7 ? "right" : "left", borderBottom: "1px solid var(--border)" }}>{h}</th>
+                  {["MLA ID", "Código", "Nombre / Título ML", "EAN", "Costo", "P. Lista", ""].map((h, j) => (
+                    <th key={j} style={{ ...labelStyle, padding: "8px 12px", textAlign: j >= 4 && j < 6 ? "right" : "left", borderBottom: "1px solid var(--border)" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -771,15 +764,14 @@ export default function CostosPage() {
                       <p style={{ fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{entry.titulo_ml ?? entry.nombre}</p>
                     </td>
                     <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--text-dim)" }}>{entry.ean}</td>
-                    <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-muted)", textAlign: "right" }}>{entry.costo_sin_iva > 0 ? formatARS(entry.costo_sin_iva) : "—"}</td>
-                    <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--green)", fontWeight: "600", textAlign: "right" }}>{formatARS(entry.costo_con_iva)}</td>
+                    <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--green)", fontWeight: "600", textAlign: "right" }}>{formatARS(entry.costo)}</td>
                     <td style={{ padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text)", textAlign: "right" }}>{entry.precio_lista > 0 ? formatARS(entry.precio_lista) : "—"}</td>
                     <td style={{ padding: "10px 12px", textAlign: "right" }}>
                       <button
                         onClick={() => {
                           const newSynced = { ...syncedCosts }; delete newSynced[mlId];
                           const newCosts = { ...costs };
-                          if (newCosts[mlId] === entry.costo_con_iva) delete newCosts[mlId];
+                          if (newCosts[mlId] === entry.costo) delete newCosts[mlId];
                           const newTitles = { ...titles }; delete newTitles[mlId];
                           localStorage.setItem("ml_costs_ean", JSON.stringify(newSynced));
                           localStorage.setItem("ml_costs", JSON.stringify(newCosts));

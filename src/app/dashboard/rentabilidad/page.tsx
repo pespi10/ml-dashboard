@@ -28,8 +28,7 @@ interface DashboardData {
 }
 
 interface SyncedCostEntry {
-  costo_sin_iva: number;
-  costo_con_iva: number;
+  costo: number;
   precio_lista: number;
 }
 
@@ -210,7 +209,7 @@ export default function RentabilidadPage() {
     return (data.profitabilityByItem ?? []).map((item) => {
       // Synced costs (from EAN match) take priority over direct costs
       const synced = mlSyncedCosts[item.itemId];
-      const unitCost = synced?.costo_con_iva ?? mlCosts[item.itemId] ?? null;
+      const unitCost = synced?.costo ?? mlCosts[item.itemId] ?? null;
       const totalCost = unitCost !== null ? unitCost * item.unitsSold : null;
       const realNetProfit =
         totalCost !== null ? item.grossRevenue - item.totalSaleFees - totalCost : null;
