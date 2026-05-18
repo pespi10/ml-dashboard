@@ -1,7 +1,7 @@
 // src/app/dashboard/costos/page.tsx
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 import { formatARS } from "@/lib/ml-api";
 
@@ -203,21 +203,6 @@ function parseEanXLSX(buffer: ArrayBuffer): EanRow[] {
   return extractEanRows(headers, dataRows);
 }
 
-// ── Storage helpers ──────────────────────────────────────────────────────────
-
-function loadFromStorage() {
-  if (typeof window === "undefined") return { costs: {}, titles: {}, syncedCosts: {} };
-  try {
-    const costs: Record<string, number> = JSON.parse(localStorage.getItem("ml_costs") || "{}");
-    const titles: Record<string, string> = JSON.parse(localStorage.getItem("ml_costs_titles") || "{}");
-    // ml_costs_ean es la nueva clave; ml_synced_costs era la anterior (ignorar)
-    const syncedCosts: Record<string, SyncedCostEntry> = JSON.parse(localStorage.getItem("ml_costs_ean") || "{}");
-    return { costs, titles, syncedCosts };
-  } catch {
-    return { costs: {}, titles: {}, syncedCosts: {} };
-  }
-}
-
 // ── Styles ───────────────────────────────────────────────────────────────────
 
 const inputStyle = {
@@ -243,10 +228,22 @@ const labelStyle: React.CSSProperties = {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function CostosPage() {
-  const initial = loadFromStorage();
-  const [costs, setCosts] = useState<Record<string, number>>(initial.costs);
-  const [titles, setTitles] = useState<Record<string, string>>(initial.titles);
-  const [syncedCosts, setSyncedCosts] = useState<Record<string, SyncedCostEntry>>(initial.syncedCosts);
+  const [costs, setCosts] = useState<Record<string, number>>({});
+  const [titles, setTitles] = useState<Record<string, string>>({});
+  const [syncedCosts, setSyncedCosts] = useState<Record<string, SyncedCostEntry>>({});
+
+  useEffect(() => {
+    try {
+      const synced: Record<string, SyncedCostEntry> = JSON.parse(localStorage.getItem("ml_costs_ean") || "{}");
+      const c: Record<string, number> = JSON.parse(localStorage.getItem("ml_costs") || "{}");
+      const t: Record<string, string> = JSON.parse(localStorage.getItem("ml_costs_titles") || "{}");
+      setSyncedCosts(synced);
+      setCosts(c);
+      setTitles(t);
+    } catch {
+      // localStorage unavailable or corrupt — leave state as empty
+    }
+  }, []);
 
   // Direct upload state
   const [dragging, setDragging] = useState(false);
@@ -390,6 +387,12 @@ export default function CostosPage() {
     let totalMatched = 0;
     let totalNotFound = 0;
 
+    // Limpiar todo antes de guardar los nuevos datos
+    localStorage.clear();
+    setCosts({});
+    setTitles({});
+    setSyncedCosts({});
+
     setSyncProgress({ status: "running", total: eanRows.length, processed: 0, matched: 0, notFound: 0, results: [] });
 
     for (let i = 0; i < eanRows.length; i += BATCH) {
@@ -439,13 +442,9 @@ export default function CostosPage() {
       }
     }
 
-    localStorage.removeItem("ml_costs_ean");
-    localStorage.removeItem("ml_costs");
-    localStorage.removeItem("ml_costs_titles");
     localStorage.setItem("ml_costs", JSON.stringify(newCosts));
     localStorage.setItem("ml_costs_titles", JSON.stringify(newTitles));
     localStorage.setItem("ml_costs_ean", JSON.stringify(newSynced));
-    localStorage.removeItem("ml_synced_costs");
     setCosts(newCosts); setTitles(newTitles); setSyncedCosts(newSynced);
 
     setSyncProgress(prev => prev ? { ...prev, status: "done", processed: eanRows.length, matched: totalMatched, notFound: totalNotFound, results: allResults } : null);
