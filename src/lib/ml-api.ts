@@ -151,8 +151,6 @@ export interface DashboardOverview {
   ordersPrevTotal: number;
   activeItems: number;
   pausedItems: number;
-  gmv: number;
-  avgTicket: number;
 }
 
 // ── API calls ─────────────────────────────────────────────────────────
@@ -231,6 +229,28 @@ export async function getOrdersPage(
     tokens
   );
   return { results: data.results, total: data.paging.total, page, limit };
+}
+
+async function getOrdersTotal(tokens: MLTokens, days: number): Promise<number> {
+  const userId = tokens.user_id;
+  const from = new Date(Date.now() - days * 86400_000).toISOString();
+  const data = await mlFetch<{ results: MLOrder[]; paging: { total: number } }>(
+    `/orders/search?seller=${userId}&order.date_created.from=${from}&limit=1&offset=0&sort=date_desc`,
+    tokens
+  );
+  return data.paging.total;
+}
+
+async function getItemsTotalByStatus(
+  tokens: MLTokens,
+  status: MLItem["status"]
+): Promise<number> {
+  const userId = tokens.user_id;
+  const data = await mlFetch<{ results: string[]; paging: { total: number } }>(
+    `/users/${userId}/items/search?status=${status}&limit=1&offset=0`,
+    tokens
+  );
+  return data.paging.total;
 }
 
 export async function getItemVisits(
@@ -330,40 +350,18 @@ async function getCategoryName(categoryId: string, tokens: MLTokens): Promise<st
 // ── Dashboard stats ───────────────────────────────────────────────────
 
 export async function getDashboardOverview(tokens: MLTokens): Promise<DashboardOverview> {
-  const userId = tokens.user_id;
-  const from30 = new Date(Date.now() - 30 * 86400_000).toISOString();
-  const from60 = new Date(Date.now() - 60 * 86400_000).toISOString();
-
-  const [orders30, orders60, activeData, pausedData] = await Promise.all([
-    mlFetch<{ results: MLOrder[]; paging: { total: number } }>(
-      `/orders/search?seller=${userId}&order.date_created.from=${from30}&limit=50&offset=0&sort=date_desc`,
-      tokens
-    ),
-    mlFetch<{ results: []; paging: { total: number } }>(
-      `/orders/search?seller=${userId}&order.date_created.from=${from60}&limit=1&offset=0`,
-      tokens
-    ),
-    mlFetch<{ results: []; paging: { total: number } }>(
-      `/users/${userId}/items/search?status=active&limit=1`,
-      tokens
-    ),
-    mlFetch<{ results: []; paging: { total: number } }>(
-      `/users/${userId}/items/search?status=paused&limit=1`,
-      tokens
-    ),
+  const [ordersTotal, orders60Total, activeItems, pausedItems] = await Promise.all([
+    getOrdersTotal(tokens, 30),
+    getOrdersTotal(tokens, 60),
+    getItemsTotalByStatus(tokens, "active"),
+    getItemsTotalByStatus(tokens, "paused"),
   ]);
-
-  const ordersTotal = orders30.paging.total;
-  const ordersPrevTotal = Math.max(0, orders60.paging.total - ordersTotal);
-  const gmv = orders30.results.reduce((s, o) => s + o.total_amount, 0);
 
   return {
     ordersTotal,
-    ordersPrevTotal,
-    activeItems: activeData.paging.total,
-    pausedItems: pausedData.paging.total,
-    gmv,
-    avgTicket: orders30.results.length > 0 ? gmv / orders30.results.length : 0,
+    ordersPrevTotal: Math.max(0, orders60Total - ordersTotal),
+    activeItems,
+    pausedItems,
   };
 }
 
@@ -372,18 +370,14 @@ export async function getDashboardStats(
   page = 1,
   limit = 50
 ): Promise<DashboardStats> {
-  const [items, { results: orders, total: ordersTotal }] = await Promise.all([
+  const [overview, items, { results: orders, total: ordersTotal }] = await Promise.all([
+    getDashboardOverview(tokens),
     getMyItems(tokens),
     getOrdersPage(tokens, page, limit, 30),
   ]);
 
-  const { total: orders60Total } = await getOrdersPage(tokens, 1, 1, 60);
-  const ordersPrevTotal = Math.max(0, orders60Total - ordersTotal);
-
   const gmv = orders.reduce((s, o) => s + o.total_amount, 0);
-  // Estimate prev GMV using same avg ticket applied to prev order count
   const avgTicket = orders.length > 0 ? gmv / orders.length : 0;
-  const gmvPrev = avgTicket * ordersPrevTotal;
 
   const byDay: Record<string, { revenue: number; orders: number }> = {};
   orders.forEach((o) => {
@@ -431,11 +425,11 @@ export async function getDashboardStats(
 
   return {
     gmv,
-    gmvPrev,
+    gmvPrev: 0,
     orders: ordersTotal,
-    ordersPrev: ordersPrevTotal,
-    activeItems: items.filter((i) => i.status === "active").length,
-    pausedItems: items.filter((i) => i.status === "paused").length,
+    ordersPrev: overview.ordersPrevTotal,
+    activeItems: overview.activeItems,
+    pausedItems: overview.pausedItems,
     avgTicket,
     topItems,
     revenueByDay,

@@ -26,9 +26,10 @@ function SectionSkeleton({ height = 280 }: { height?: number }) {
 
 export default function DashboardPage() {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
-  const [charts, setCharts] = useState<DashboardStats | null>(null);
+  const [lazyStats, setLazyStats] = useState<DashboardStats | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(true);
-  const [chartsLoading, setChartsLoading] = useState(true);
+  const [chartLoading, setChartLoading] = useState(true);
+  const [tablesLoading, setTablesLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
@@ -36,42 +37,48 @@ export default function DashboardPage() {
     try {
       const res = await fetch("/api/dashboard?overview=1");
       if (!res.ok) {
-        if (res.status === 401) { window.location.href = "/login"; return; }
+        if (res.status === 401) { window.location.href = "/login"; return false; }
         throw new Error("Error al cargar datos");
       }
       setOverview(await res.json());
       setLastUpdate(new Date());
       setError(null);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error desconocido");
+      return false;
     } finally {
       setOverviewLoading(false);
     }
   };
 
-  const fetchCharts = async () => {
-    setChartsLoading(true);
+  const fetchLazyStats = async () => {
+    setChartLoading(true);
+    setTablesLoading(true);
     try {
       const res = await fetch("/api/dashboard?page=1&limit=50");
       if (!res.ok) return;
-      setCharts(await res.json());
+      const data = await res.json();
+      setLazyStats(data);
     } catch {
-      // charts are non-critical; fail silently
+      // Lazy sections are non-critical; keep the overview usable.
     } finally {
-      setChartsLoading(false);
+      setChartLoading(false);
+      setTablesLoading(false);
     }
   };
 
-  const refresh = () => {
+  const refresh = async () => {
     setOverviewLoading(true);
-    setChartsLoading(true);
-    fetchOverview();
-    fetchCharts();
+    setChartLoading(true);
+    setTablesLoading(true);
+    setLazyStats(null);
+    const ok = await fetchOverview();
+    if (ok) fetchLazyStats();
   };
 
   useEffect(() => {
-    fetchOverview();
-    fetchCharts();
+    refresh();
     const interval = setInterval(refresh, 5 * 60 * 1000);
     return () => clearInterval(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -122,8 +129,9 @@ export default function DashboardPage() {
 
   if (!overview) return null;
 
-  const gmvChange = pctChange(overview.gmv, 0); // no prev GMV from overview
   const ordersChange = pctChange(overview.ordersTotal, overview.ordersPrevTotal);
+  const loadedGmv = lazyStats?.gmv ?? 0;
+  const loadedAvgTicket = lazyStats?.avgTicket ?? 0;
 
   return (
     <div>
@@ -176,24 +184,24 @@ export default function DashboardPage() {
         marginBottom: "24px",
       }}>
         <StatCard
-          label="GMV 30d"
-          value={formatARS(overview.gmv)}
-          change={gmvChange}
-          subvalue="últimas 50 órdenes"
+          label="Órdenes 30d"
+          value={overview.ordersTotal.toString()}
+          change={ordersChange}
+          subvalue="total agregado"
           accent="yellow"
           delay={0}
         />
         <StatCard
-          label="Órdenes 30d"
-          value={overview.ordersTotal.toString()}
-          change={ordersChange}
-          subvalue="vs mes anterior"
+          label="GMV cargado"
+          value={chartLoading ? "…" : formatARS(loadedGmv)}
+          subvalue="primeras 50 órdenes"
           accent="green"
           delay={60}
         />
         <StatCard
           label="Ticket promedio"
-          value={formatARS(overview.avgTicket)}
+          value={chartLoading ? "…" : formatARS(loadedAvgTicket)}
+          subvalue="órdenes cargadas"
           accent="blue"
           delay={120}
         />
@@ -208,10 +216,10 @@ export default function DashboardPage() {
 
       {/* Gráfico de ingresos — lazy */}
       <div style={{ marginBottom: "24px" }}>
-        {chartsLoading ? (
+        {chartLoading ? (
           <SectionSkeleton height={280} />
-        ) : charts ? (
-          <RevenueChart data={charts.revenueByDay} />
+        ) : lazyStats ? (
+          <RevenueChart data={lazyStats.revenueByDay} />
         ) : null}
       </div>
 
@@ -234,7 +242,7 @@ export default function DashboardPage() {
             fontSize: "15px", fontWeight: "700",
             marginBottom: "20px",
           }}>Top productos</h3>
-          {chartsLoading ? (
+          {tablesLoading ? (
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               {[...Array(4)].map((_, i) => (
                 <div key={i} className="skeleton" style={{ height: "36px", borderRadius: "6px" }} />
@@ -242,9 +250,9 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {!charts || charts.topItems.length === 0 ? (
+              {!lazyStats || lazyStats.topItems.length === 0 ? (
                 <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>Sin datos</p>
-              ) : charts.topItems.map((item, i) => (
+              ) : lazyStats.topItems.map((item, i) => (
                 <div key={item.id} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                   <span style={{
                     fontFamily: "var(--font-mono)", fontSize: "11px",
@@ -283,17 +291,17 @@ export default function DashboardPage() {
             marginBottom: "20px",
             display: "flex", alignItems: "center", gap: "8px",
           }}>
-            {charts && charts.stockAlerts.length > 0 && (
+            {lazyStats && lazyStats.stockAlerts.length > 0 && (
               <span style={{
                 background: "var(--red)", color: "#fff",
                 fontSize: "10px", fontWeight: "700",
                 padding: "2px 7px", borderRadius: "10px",
                 fontFamily: "var(--font-mono)",
-              }}>{charts.stockAlerts.length}</span>
+              }}>{lazyStats.stockAlerts.length}</span>
             )}
             Alertas de stock
           </h3>
-          {chartsLoading ? (
+          {tablesLoading ? (
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               {[...Array(3)].map((_, i) => (
                 <div key={i} className="skeleton" style={{ height: "44px", borderRadius: "6px" }} />
@@ -301,9 +309,9 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              {!charts || charts.stockAlerts.length === 0 ? (
+              {!lazyStats || lazyStats.stockAlerts.length === 0 ? (
                 <p style={{ fontSize: "13px", color: "var(--green)" }}>✓ Sin alertas</p>
-              ) : charts.stockAlerts.map((item) => (
+              ) : lazyStats.stockAlerts.map((item) => (
                 <a
                   key={item.id}
                   href={item.permalink}

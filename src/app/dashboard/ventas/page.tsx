@@ -40,8 +40,12 @@ export default function VentasPage() {
   const [costs, setCosts] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    const stored = localStorage.getItem("ml_costs");
-    if (stored) setCosts(JSON.parse(stored));
+    try {
+      const stored = localStorage.getItem("ml_costs");
+      if (stored) setCosts(JSON.parse(stored));
+    } catch {
+      setCosts({});
+    }
   }, []);
 
   useEffect(() => {
@@ -50,20 +54,22 @@ export default function VentasPage() {
       .then((data) => {
         setOrders(data.results ?? []);
         setTotal(data.total ?? 0);
-        setPage(1);
+        setPage(data.page ?? 1);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
 
   const loadMore = () => {
+    if (loadingMore || !hasMore) return;
     const nextPage = page + 1;
     setLoadingMore(true);
     fetch(`/api/sales?page=${nextPage}&limit=50`)
       .then((r) => r.json())
       .then((data) => {
         setOrders((prev) => [...prev, ...(data.results ?? [])]);
-        setPage(nextPage);
+        setTotal(data.total ?? total);
+        setPage(data.page ?? nextPage);
       })
       .catch(console.error)
       .finally(() => setLoadingMore(false));
@@ -153,9 +159,17 @@ export default function VentasPage() {
           const firstItem = order.order_items[0];
           const unitPrice = firstItem?.unit_price ?? 0;
           const saleFee = order.order_items.reduce((s, oi) => s + (oi.sale_fee ?? 0), 0);
-          const itemId = firstItem?.item.id ?? "";
-          const cost = costs[itemId];
-          const profit = cost != null ? unitPrice - saleFee - cost * (firstItem?.quantity ?? 1) : null;
+          const grossItems = order.order_items.reduce(
+            (s, oi) => s + oi.unit_price * oi.quantity,
+            0
+          );
+          const itemsWithCost = order.order_items.filter((oi) => costs[oi.item.id] != null);
+          const costTotal = itemsWithCost.reduce(
+            (s, oi) => s + costs[oi.item.id] * oi.quantity,
+            0
+          );
+          const profit = itemsWithCost.length > 0 ? grossItems - saleFee - costTotal : null;
+          const partialCost = profit != null && itemsWithCost.length < order.order_items.length;
 
           return (
             <div
@@ -217,7 +231,7 @@ export default function VentasPage() {
                     ? "var(--green)"
                     : "var(--red)",
               }}>
-                {profit == null ? "—" : formatARS(profit)}
+                {profit == null ? "—" : `${partialCost ? "~" : ""}${formatARS(profit)}`}
               </span>
 
               <span style={{
