@@ -363,7 +363,7 @@ export default function CostosPage() {
   // ── EAN sync handlers ─────────────────────────────────────────────────────
 
   const downloadEanTemplate = () => {
-    const csv = "codigo,nombre,ean,costo,precio_lista\nSKU001,Auriculares JBL,7898000000001,15000,22000\n";
+    const csv = "codigo,nombre,costo,precio_lista,ean\nSKU001,Auriculares JBL,15000,22000,7898000000001\n";
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "plantilla_ean.csv"; a.click();
@@ -631,7 +631,7 @@ export default function CostosPage() {
             <div style={{ marginTop: "14px", padding: "12px 16px", background: "var(--surface-2)", borderRadius: "var(--radius)" }}>
               <p style={{ ...labelStyle, marginBottom: "8px" }}>Columnas esperadas:</p>
               <code style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--yellow)", background: "rgba(255,230,0,0.07)", padding: "4px 10px", borderRadius: "4px", display: "block" }}>
-                codigo · nombre · ean · costo · precio_lista
+                codigo · nombre · costo · precio_lista · ean
               </code>
               <p style={{ fontSize: "11px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "6px" }}>
                 También detecta encabezados automáticamente si el orden varía
