@@ -208,6 +208,44 @@ export async function getMyItems(tokens: MLTokens): Promise<MLItem[]> {
   return items;
 }
 
+export async function getAllItemsByStatus(
+  tokens: MLTokens,
+  status: MLItem["status"],
+  maxItems = Infinity
+): Promise<{ results: MLItem[]; total: number }> {
+  const userId = tokens.user_id;
+  const items: MLItem[] = [];
+  let offset = 0;
+  const pageSize = 50;
+  let total = 0;
+
+  while (items.length < maxItems) {
+    const data = await mlFetch<{ results: string[]; paging: { total: number } }>(
+      `/users/${userId}/items/search?status=${status}&limit=${pageSize}&offset=${offset}`,
+      tokens
+    );
+    total = data.paging.total;
+    if (!data.results.length) break;
+
+    const idsToFetch = data.results.slice(0, maxItems - items.length);
+    const detailPages = await Promise.all(
+      chunkArray(idsToFetch, 20).map((chunk) =>
+        mlFetch<MLItem[]>(`/items?ids=${chunk.join(",")}`, tokens)
+      )
+    );
+    const batch = detailPages
+      .flatMap((d) => d as unknown as { code: number; body: MLItem }[])
+      .filter((r) => r.code === 200)
+      .map((r) => r.body);
+    items.push(...batch);
+
+    offset += pageSize;
+    if (offset >= total || data.results.length < pageSize) break;
+  }
+
+  return { results: items, total };
+}
+
 export async function getMyItemsPage(
   tokens: MLTokens,
   page: number,

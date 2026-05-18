@@ -1,7 +1,7 @@
 // src/app/dashboard/productos/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import type { MLItem } from "@/lib/ml-api";
 import { formatARS } from "@/lib/ml-api";
 
@@ -19,88 +19,92 @@ const STATUS_COLOR: Record<string, string> = {
   under_review: "var(--blue)",
 };
 
+type Tab = "active" | "paused" | "closed" | "all";
+
 export default function ProductosPage() {
-  const [items, setItems] = useState<MLItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const [active, setActive] = useState<MLItem[]>([]);
+  const [paused, setPaused] = useState<MLItem[]>([]);
+  const [closed, setClosed] = useState<MLItem[]>([]);
+  const [closedTotal, setClosedTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [filter, setFilter] = useState<"all" | "active" | "paused" | "closed">("all");
+  const [tab, setTab] = useState<Tab>("active");
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    setLoading(true);
-    fetch("/api/products?page=1&limit=50")
+    fetch("/api/products")
       .then((r) => r.json())
       .then((data) => {
-        setItems(data.results ?? []);
-        setTotal(data.total ?? 0);
-        setPage(data.page ?? 1);
+        setActive(data.active ?? []);
+        setPaused(data.paused ?? []);
+        setClosed(data.closed ?? []);
+        setClosedTotal(data.closedTotal ?? 0);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
 
-  const loadMore = () => {
-    if (loadingMore || items.length >= total) return;
-    const nextPage = page + 1;
-    setLoadingMore(true);
-    fetch(`/api/products?page=${nextPage}&limit=50`)
-      .then((r) => r.json())
-      .then((data) => {
-        setItems((prev) => [...prev, ...(data.results ?? [])]);
-        setTotal(data.total ?? total);
-        setPage(data.page ?? nextPage);
-      })
-      .catch(console.error)
-      .finally(() => setLoadingMore(false));
+  const allItems = useMemo(
+    () => [...active, ...paused, ...closed],
+    [active, paused, closed]
+  );
+
+  const tabItems: Record<Tab, MLItem[]> = {
+    active,
+    paused,
+    closed,
+    all: allItems,
   };
 
-  const filtered = items.filter((i) => {
-    const matchStatus = filter === "all" || i.status === filter;
-    const matchSearch = !search || i.title.toLowerCase().includes(search.toLowerCase());
-    return matchStatus && matchSearch;
-  });
+  const filtered = useMemo(() => {
+    const base = tabItems[tab];
+    if (!search) return base;
+    const q = search.toLowerCase();
+    return base.filter((i) => i.title.toLowerCase().includes(q) || i.id.toLowerCase().includes(q));
+  }, [tab, search, active, paused, closed]);
 
-  const counts = {
-    all: total || items.length,
-    active: items.filter((i) => i.status === "active").length,
-    paused: items.filter((i) => i.status === "paused").length,
-    closed: items.filter((i) => i.status === "closed").length,
-  };
-  const hasMore = items.length < total;
+  const tabs: { key: Tab; label: string; count: number }[] = [
+    { key: "active",  label: "Activas",  count: active.length },
+    { key: "paused",  label: "Pausadas", count: paused.length },
+    { key: "closed",  label: "Cerradas", count: closedTotal },
+    { key: "all",     label: "Todas",    count: active.length + paused.length + closedTotal },
+  ];
 
   return (
     <div>
       {/* Header */}
-      <div style={{ marginBottom: "28px" }}>
+      <div style={{ marginBottom: "24px" }}>
         <h1 style={{
           fontFamily: "var(--font-display)", fontSize: "clamp(22px, 4vw, 28px)",
           fontWeight: "800", letterSpacing: "-0.02em", marginBottom: "4px",
-        }}>Productos</h1>
+        }}>
+          Productos
+        </h1>
         <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-          Mostrando {items.length} de {total || items.length} publicaciones
+          {loading
+            ? "Cargando publicaciones…"
+            : `${active.length} activas · ${paused.length} pausadas · ${closedTotal} cerradas`}
         </p>
       </div>
 
-      {/* Filters */}
+      {/* Tabs + search */}
       <div style={{
         display: "flex", gap: "8px", flexWrap: "wrap",
         marginBottom: "20px", alignItems: "center",
       }}>
-        {(["all", "active", "paused", "closed"] as const).map((f) => (
-          <button key={f} onClick={() => setFilter(f)} style={{
-            background: filter === f ? "var(--yellow-dim)" : "var(--surface)",
-            border: `1px solid ${filter === f ? "rgba(255,230,0,0.25)" : "var(--border)"}`,
-            color: filter === f ? "var(--yellow)" : "var(--text-muted)",
-            borderRadius: "20px",
-            padding: "6px 14px",
-            fontSize: "12px",
-            fontFamily: "var(--font-display)",
-            fontWeight: "600",
-            cursor: "pointer",
-          }}>
-            {f === "all" ? "Todas" : STATUS_LABEL[f]} · {counts[f]}
+        {tabs.map(({ key, label, count }) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            style={{
+              background: tab === key ? "var(--yellow-dim)" : "var(--surface)",
+              border: `1px solid ${tab === key ? "rgba(255,230,0,0.25)" : "var(--border)"}`,
+              color: tab === key ? "var(--yellow)" : "var(--text-muted)",
+              borderRadius: "20px", padding: "6px 14px",
+              fontSize: "12px", fontFamily: "var(--font-display)",
+              fontWeight: "600", cursor: "pointer",
+            }}
+          >
+            {label} · {loading ? "…" : count}
           </button>
         ))}
 
@@ -111,39 +115,39 @@ export default function ProductosPage() {
           onChange={(e) => setSearch(e.target.value)}
           style={{
             marginLeft: "auto",
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-            padding: "8px 14px",
-            color: "var(--text)",
-            fontFamily: "var(--font-mono)",
-            fontSize: "12px",
-            outline: "none",
-            width: "220px",
+            background: "var(--surface)", border: "1px solid var(--border)",
+            borderRadius: "var(--radius)", padding: "8px 14px",
+            color: "var(--text)", fontFamily: "var(--font-mono)",
+            fontSize: "12px", outline: "none", width: "220px",
           }}
         />
       </div>
 
+      {/* Closed tab info banner */}
+      {tab === "closed" && !loading && closedTotal > closed.length && (
+        <div style={{
+          marginBottom: "16px", padding: "10px 16px",
+          background: "var(--surface)", border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)",
+        }}>
+          Mostrando {closed.length} de {closedTotal} publicaciones cerradas
+        </div>
+      )}
+
       {/* Table */}
       <div style={{
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius-lg)",
-        overflow: "hidden",
+        background: "var(--surface)", border: "1px solid var(--border)",
+        borderRadius: "var(--radius-lg)", overflow: "hidden",
       }}>
-        {/* Table header — hidden on mobile */}
+        {/* Header */}
         <div className="table-header" style={{
           display: "grid",
           gridTemplateColumns: "1fr 100px 80px 80px 100px",
-          gap: "16px",
-          padding: "12px 20px",
+          gap: "16px", padding: "12px 20px",
           borderBottom: "1px solid var(--border)",
-          fontSize: "10px",
-          fontWeight: "600",
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: "var(--text-dim)",
-          fontFamily: "var(--font-mono)",
+          fontSize: "10px", fontWeight: "600", letterSpacing: "0.08em",
+          textTransform: "uppercase", color: "var(--text-dim)", fontFamily: "var(--font-mono)",
         }}>
           <span>Publicación</span>
           <span>Precio</span>
@@ -162,7 +166,7 @@ export default function ProductosPage() {
 
         {!loading && filtered.length === 0 && (
           <div style={{ padding: "48px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
-            Sin resultados
+            {search ? "Sin resultados para esa búsqueda" : "Sin publicaciones en esta categoría"}
           </div>
         )}
 
@@ -175,12 +179,9 @@ export default function ProductosPage() {
             style={{
               display: "grid",
               gridTemplateColumns: "1fr 100px 80px 80px 100px",
-              gap: "16px",
-              padding: "14px 20px",
+              gap: "16px", padding: "14px 20px",
               borderBottom: i < filtered.length - 1 ? "1px solid var(--border)" : "none",
-              textDecoration: "none",
-              alignItems: "center",
-              transition: "background 0.1s",
+              textDecoration: "none", alignItems: "center", transition: "background 0.1s",
             }}
             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -188,9 +189,10 @@ export default function ProductosPage() {
             <div style={{ minWidth: 0 }}>
               <p style={{
                 fontSize: "13px", color: "var(--text)",
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                marginBottom: "2px",
-              }}>{item.title}</p>
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: "2px",
+              }}>
+                {item.title}
+              </p>
               <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
                 {item.id}
               </p>
@@ -199,9 +201,7 @@ export default function ProductosPage() {
               {formatARS(item.price)}
             </span>
             <span style={{
-              fontSize: "14px",
-              fontFamily: "var(--font-mono)",
-              fontWeight: "700",
+              fontSize: "14px", fontFamily: "var(--font-mono)", fontWeight: "700",
               color: item.available_quantity === 0
                 ? "var(--red)"
                 : item.available_quantity <= 3
@@ -214,54 +214,18 @@ export default function ProductosPage() {
               {item.sold_quantity}
             </span>
             <span style={{
-              fontSize: "11px",
-              fontWeight: "600",
-              fontFamily: "var(--font-display)",
+              fontSize: "11px", fontWeight: "600", fontFamily: "var(--font-display)",
               color: STATUS_COLOR[item.status] || "var(--text-dim)",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
+              display: "flex", alignItems: "center", gap: "6px",
             }}>
               <span style={{
                 width: "6px", height: "6px", borderRadius: "50%",
-                background: STATUS_COLOR[item.status] || "var(--text-dim)",
-                flexShrink: 0,
+                background: STATUS_COLOR[item.status] || "var(--text-dim)", flexShrink: 0,
               }} />
               {STATUS_LABEL[item.status] || item.status}
             </span>
           </a>
         ))}
-
-        {!loading && hasMore && (
-          <div style={{
-            padding: "20px",
-            borderTop: "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "16px",
-          }}>
-            <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-              {items.length} de {total} publicaciones cargadas
-            </span>
-            <button
-              onClick={loadMore}
-              disabled={loadingMore}
-              style={{
-                background: "var(--surface-2)",
-                border: "1px solid var(--border)",
-                borderRadius: "var(--radius)",
-                padding: "8px 20px",
-                color: loadingMore ? "var(--text-dim)" : "var(--text)",
-                fontFamily: "var(--font-mono)",
-                fontSize: "12px",
-                cursor: loadingMore ? "not-allowed" : "pointer",
-              }}
-            >
-              {loadingMore ? "Cargando..." : "Cargar más"}
-            </button>
-          </div>
-        )}
       </div>
 
       <style>{`
