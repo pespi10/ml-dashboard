@@ -10,10 +10,13 @@ interface EanItem {
   precio_lista: number;
 }
 
+export type MatchMethod = "gtin" | "sku" | "not_found";
+
 export interface SyncResult extends EanItem {
   ml_id: string | null;
   titulo_ml: string | null;
   found: boolean;
+  match_method: MatchMethod;
 }
 
 interface MLAttribute {
@@ -27,9 +30,16 @@ interface MLItemDetail {
   attributes: MLAttribute[];
 }
 
+interface ItemMaps {
+  gtinMap: Map<string, { id: string; title: string }>;
+  skuMap: Map<string, { id: string; title: string }>;
+}
+
 const ML_BASE = "https://api.mercadolibre.com";
 const ITEM_BATCH = 20;
 const ID_PAGE = 100;
+
+const STATUSES = ["active", "paused", "closed", "under_review"] as const;
 
 async function mlGet<T>(path: string, accessToken: string): Promise<T> {
   const res = await fetch(`${ML_BASE}${path}`, {
@@ -40,9 +50,6 @@ async function mlGet<T>(path: string, accessToken: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-const STATUSES = ["active", "paused", "closed", "under_review"] as const;
-
-// Fetches all IDs for one status (all pages)
 async function fetchAllIdsByStatus(
   userId: number,
   accessToken: string,
@@ -63,20 +70,16 @@ async function fetchAllIdsByStatus(
   return ids;
 }
 
-// Fetches all vendor item IDs across all statuses, then builds { ean → { id, title } }
-async function buildGtinMap(
-  userId: number,
-  accessToken: string
-): Promise<Map<string, { id: string; title: string }>> {
-  // Fetch all statuses in parallel, then deduplicate
+// Builds both gtinMap { ean → item } and skuMap { seller_sku → item } in one pass
+async function buildItemMaps(userId: number, accessToken: string): Promise<ItemMaps> {
   const idsByStatus = await Promise.all(
     STATUSES.map((s) => fetchAllIdsByStatus(userId, accessToken, s))
   );
   const allIds = Array.from(new Set(idsByStatus.flat()));
 
-  const map = new Map<string, { id: string; title: string }>();
+  const gtinMap = new Map<string, { id: string; title: string }>();
+  const skuMap = new Map<string, { id: string; title: string }>();
 
-  // Fetch GTIN attributes in batches of 20
   for (let i = 0; i < allIds.length; i += ITEM_BATCH) {
     const chunk = allIds.slice(i, i + ITEM_BATCH);
     const details = await mlGet<{ code: number; body: MLItemDetail }[]>(
@@ -86,14 +89,17 @@ async function buildGtinMap(
     for (const entry of details) {
       if (entry.code !== 200) continue;
       const item = entry.body;
+      const ref = { id: item.id, title: item.title };
+
       const gtin = item.attributes?.find((a) => a.id === "GTIN")?.value_name;
-      if (gtin) {
-        map.set(gtin.replace(/\D/g, ""), { id: item.id, title: item.title });
-      }
+      if (gtin) gtinMap.set(gtin.replace(/\D/g, ""), ref);
+
+      const sku = item.attributes?.find((a) => a.id === "SELLER_SKU")?.value_name;
+      if (sku) skuMap.set(sku.trim(), ref);
     }
   }
 
-  return map;
+  return { gtinMap, skuMap };
 }
 
 export async function POST(request: NextRequest) {
@@ -113,8 +119,9 @@ export async function POST(request: NextRequest) {
   }
 
   let gtinMap: Map<string, { id: string; title: string }>;
+  let skuMap: Map<string, { id: string; title: string }>;
   try {
-    gtinMap = await buildGtinMap(tokens.user_id, tokens.access_token);
+    ({ gtinMap, skuMap } = await buildItemMaps(tokens.user_id, tokens.access_token));
   } catch (err) {
     return NextResponse.json(
       { error: "Failed to fetch vendor items", detail: String(err) },
@@ -123,25 +130,36 @@ export async function POST(request: NextRequest) {
   }
 
   const results: SyncResult[] = [];
-  let matched = 0;
-  let notFound = 0;
+  let matched_by_gtin = 0;
+  let matched_by_sku = 0;
+  let not_found = 0;
 
   for (const item of items) {
     const ean = item.ean.replace(/\D/g, "");
-    const mlItem = gtinMap.get(ean);
-    if (mlItem) {
-      matched++;
-      results.push({ ...item, ml_id: mlItem.id, titulo_ml: mlItem.title, found: true });
-    } else {
-      notFound++;
-      results.push({ ...item, ml_id: null, titulo_ml: null, found: false });
+    const byGtin = gtinMap.get(ean);
+    if (byGtin) {
+      matched_by_gtin++;
+      results.push({ ...item, ml_id: byGtin.id, titulo_ml: byGtin.title, found: true, match_method: "gtin" });
+      continue;
     }
+
+    const bySku = skuMap.get(item.codigo.trim());
+    if (bySku) {
+      matched_by_sku++;
+      results.push({ ...item, ml_id: bySku.id, titulo_ml: bySku.title, found: true, match_method: "sku" });
+      continue;
+    }
+
+    not_found++;
+    results.push({ ...item, ml_id: null, titulo_ml: null, found: false, match_method: "not_found" });
   }
 
   return NextResponse.json({
-    matched,
-    notFound,
+    matched_by_gtin,
+    matched_by_sku,
+    matched: matched_by_gtin + matched_by_sku,
+    not_found,
     results,
-    vendor_items_indexed: gtinMap.size,
+    vendor_items_indexed: { gtin: gtinMap.size, sku: skuMap.size },
   });
 }

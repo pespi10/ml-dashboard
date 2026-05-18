@@ -17,10 +17,13 @@ type EanRow = {
   precio_lista: number;
 };
 
+type MatchMethod = "gtin" | "sku" | "not_found";
+
 type SyncResult = EanRow & {
   ml_id: string | null;
   titulo_ml: string | null;
   found: boolean;
+  match_method: MatchMethod;
 };
 
 type SyncProgress = {
@@ -28,6 +31,8 @@ type SyncProgress = {
   total: number;
   processed: number;
   matched: number;
+  matchedByGtin: number;
+  matchedBySku: number;
   notFound: number;
   results: SyncResult[];
 };
@@ -407,6 +412,8 @@ export default function CostosPage() {
     if (!eanRows.length) return;
     const allResults: SyncResult[] = [];
     let totalMatched = 0;
+    let totalByGtin = 0;
+    let totalBySku = 0;
     let totalNotFound = 0;
 
     // Borrar explícitamente todas las keys conocidas antes de guardar
@@ -417,9 +424,9 @@ export default function CostosPage() {
     console.log("[runSync] localStorage after clear:", Object.keys(localStorage));
     console.log("[runSync] React state reset — costs:{} titles:{} syncedCosts:{}");
 
-    setSyncProgress({ status: "running", total: eanRows.length, processed: 0, matched: 0, notFound: 0, results: [] });
+    setSyncProgress({ status: "running", total: eanRows.length, processed: 0, matched: 0, matchedByGtin: 0, matchedBySku: 0, notFound: 0, results: [] });
 
-    // Send all items in one request — the server builds the GTIN map once
+    // Send all items in one request — the server builds both maps once
     try {
       const res = await fetch("/api/costs/sync", {
         method: "POST",
@@ -428,11 +435,13 @@ export default function CostosPage() {
       });
       const data = await res.json();
       allResults.push(...(data.results ?? []));
-      totalMatched = data.matched ?? 0;
-      totalNotFound = data.notFound ?? 0;
+      totalByGtin = data.matched_by_gtin ?? 0;
+      totalBySku = data.matched_by_sku ?? 0;
+      totalMatched = data.matched ?? (totalByGtin + totalBySku);
+      totalNotFound = data.not_found ?? eanRows.length - totalMatched;
     } catch {
       totalNotFound = eanRows.length;
-      allResults.push(...eanRows.map(item => ({ ...item, ml_id: null, titulo_ml: null, found: false })));
+      allResults.push(...eanRows.map(item => ({ ...item, ml_id: null, titulo_ml: null, found: false, match_method: "not_found" as MatchMethod })));
     }
 
     setSyncProgress({
@@ -440,6 +449,8 @@ export default function CostosPage() {
       total: eanRows.length,
       processed: eanRows.length,
       matched: totalMatched,
+      matchedByGtin: totalByGtin,
+      matchedBySku: totalBySku,
       notFound: totalNotFound,
       results: [...allResults],
     });
@@ -470,7 +481,7 @@ export default function CostosPage() {
     setCosts(newCosts); setTitles(newTitles); setSyncedCosts(newSynced);
     console.log("[runSync] localStorage after save:", Object.keys(localStorage));
 
-    setSyncProgress(prev => prev ? { ...prev, status: "done", processed: eanRows.length, matched: totalMatched, notFound: totalNotFound, results: allResults } : null);
+    setSyncProgress(prev => prev ? { ...prev, status: "done", processed: eanRows.length, matched: totalMatched, matchedByGtin: totalByGtin, matchedBySku: totalBySku, notFound: totalNotFound, results: allResults } : null);
     setEanPreview(null);
     setEanRows([]);
   };
@@ -721,14 +732,22 @@ export default function CostosPage() {
             </div>
 
             {/* Result counts */}
-            <div style={{ display: "flex", gap: "16px", marginBottom: "16px" }}>
-              <div style={{ background: "var(--green-dim)", border: "1px solid rgba(0,212,160,0.2)", borderRadius: "var(--radius)", padding: "10px 20px", textAlign: "center", flex: 1 }}>
-                <p style={{ fontFamily: "var(--font-display)", fontSize: "24px", fontWeight: "800", color: "var(--green)" }}>{syncProgress.matched}</p>
-                <p style={{ fontSize: "11px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>vinculados a ML</p>
+            <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+              <div style={{ background: "var(--green-dim)", border: "1px solid rgba(0,212,160,0.2)", borderRadius: "var(--radius)", padding: "10px 16px", textAlign: "center", flex: 1 }}>
+                <p style={{ fontFamily: "var(--font-display)", fontSize: "22px", fontWeight: "800", color: "var(--green)" }}>{syncProgress.matched}</p>
+                <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>vinculados</p>
               </div>
-              <div style={{ background: "var(--red-dim)", border: "1px solid rgba(255,68,88,0.15)", borderRadius: "var(--radius)", padding: "10px 20px", textAlign: "center", flex: 1 }}>
-                <p style={{ fontFamily: "var(--font-display)", fontSize: "24px", fontWeight: "800", color: "var(--text-muted)" }}>{syncProgress.notFound}</p>
-                <p style={{ fontSize: "11px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>no encontrados</p>
+              <div style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px 16px", textAlign: "center", flex: 1 }}>
+                <p style={{ fontFamily: "var(--font-display)", fontSize: "22px", fontWeight: "800", color: "var(--yellow)" }}>{syncProgress.matchedByGtin}</p>
+                <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>por GTIN</p>
+              </div>
+              <div style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px 16px", textAlign: "center", flex: 1 }}>
+                <p style={{ fontFamily: "var(--font-display)", fontSize: "22px", fontWeight: "800", color: "var(--yellow)" }}>{syncProgress.matchedBySku}</p>
+                <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>por SKU</p>
+              </div>
+              <div style={{ background: "var(--red-dim)", border: "1px solid rgba(255,68,88,0.15)", borderRadius: "var(--radius)", padding: "10px 16px", textAlign: "center", flex: 1 }}>
+                <p style={{ fontFamily: "var(--font-display)", fontSize: "22px", fontWeight: "800", color: "var(--text-muted)" }}>{syncProgress.notFound}</p>
+                <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>no encontrados</p>
               </div>
             </div>
 
@@ -746,6 +765,11 @@ export default function CostosPage() {
                     <span style={{ flex: 1, fontSize: "12px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {r.found ? (r.titulo_ml ?? r.nombre) : r.nombre}
                     </span>
+                    {r.found && r.match_method !== "not_found" && (
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: r.match_method === "gtin" ? "var(--green)" : "var(--yellow)", background: "var(--surface-2)", borderRadius: "4px", padding: "2px 6px", flexShrink: 0 }}>
+                        {r.match_method}
+                      </span>
+                    )}
                     {r.found && r.ml_id && (
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--yellow)", flexShrink: 0 }}>
                         {r.ml_id}
