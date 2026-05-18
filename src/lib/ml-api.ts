@@ -96,8 +96,11 @@ export interface MLOrder {
     unit_price: number;
     sale_fee: number;
     gross_price: number;
+    manufacturing_fee?: number;
   }[];
   buyer: { id: number; nickname: string };
+  taxes?: unknown;
+  fee_details?: unknown;
 }
 
 export interface MLVisit {
@@ -245,6 +248,7 @@ export async function getOrders(
   const orders: MLOrder[] = [];
   let offset = 0;
   const limit = 50;
+  let loggedFirst = false;
 
   while (true) {
     const data = await mlFetch<{
@@ -254,6 +258,11 @@ export async function getOrders(
       `/orders/search?seller=${userId}&order.date_created.from=${from}&limit=${limit}&offset=${offset}&sort=date_desc`,
       tokens
     );
+
+    if (!loggedFirst && data.results.length > 0) {
+      console.log("[getOrders] first order full payload:", JSON.stringify(data.results[0], null, 2));
+      loggedFirst = true;
+    }
 
     orders.push(...data.results);
     offset += limit;
@@ -276,6 +285,9 @@ export async function getOrdersPage(
     `/orders/search?seller=${userId}&order.date_created.from=${from}&limit=${limit}&offset=${offset}&sort=date_desc`,
     tokens
   );
+  if (page === 1 && data.results.length > 0) {
+    console.log("[getOrdersPage] first order full payload:", JSON.stringify(data.results[0], null, 2));
+  }
   return { results: data.results, total: data.paging.total, page, limit };
 }
 

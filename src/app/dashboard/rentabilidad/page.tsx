@@ -53,13 +53,6 @@ interface CategoryRow {
   margin: number | null;
 }
 
-interface ItemTax {
-  iva: string;
-  ibb: string;
-  otherLabel: string;
-  otherPct: string;
-}
-
 type SortCol =
   | "title"
   | "categoryName"
@@ -109,7 +102,7 @@ function MarginText({ margin }: { margin: number | null }) {
   }
   const color = margin > 20 ? "var(--green)" : margin >= 10 ? "var(--yellow)" : "var(--red)";
   return (
-    <span style={{ color, fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: "600" }}>
+    <span style={{ color, fontFamily: "var(--font-mono)", fontSize: "12px", fontWeight: "600" }}>
       {margin.toFixed(1)}%
     </span>
   );
@@ -126,7 +119,7 @@ function SortHeader({
     <th
       onClick={() => onSort(col)}
       style={{
-        padding: "8px 12px", textAlign: align,
+        padding: "6px 8px", textAlign: align,
         fontSize: "10px", fontWeight: "600", letterSpacing: "0.08em",
         textTransform: "uppercase",
         color: active ? "var(--yellow)" : "var(--text-muted)",
@@ -155,7 +148,6 @@ export default function RentabilidadPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [mlCosts, setMlCosts] = useState<Record<string, number>>({});
   const [mlSyncedCosts, setMlSyncedCosts] = useState<Record<string, SyncedCostEntry>>({});
-  const [taxes, setTaxes] = useState<Record<string, ItemTax>>({});
 
   // ── Detail drawer state ────────────────────────────────
   const [selectedItem, setSelectedItem] = useState<EnrichedItem | null>(null);
@@ -177,8 +169,6 @@ export default function RentabilidadPage() {
       setMlCosts(stored);
       const synced = JSON.parse(localStorage.getItem("ml_costs_ean") || "{}");
       setMlSyncedCosts(synced);
-      const storedTaxes = JSON.parse(localStorage.getItem("ml_item_taxes") || "{}");
-      setTaxes(storedTaxes);
     } catch { /* empty localStorage is fine */ }
 
     fetch("/api/dashboard")
@@ -186,16 +176,6 @@ export default function RentabilidadPage() {
       .then((d: DashboardData) => { setData(d); setLoading(false); })
       .catch((e: Error) => { setFetchError(e.message); setLoading(false); });
   }, []);
-
-  // ── Tax updater ────────────────────────────────────────
-  const updateTax = (itemId: string, field: keyof ItemTax, value: string) => {
-    setTaxes((prev) => {
-      const current = prev[itemId] ?? { iva: "", ibb: "", otherLabel: "", otherPct: "" };
-      const updated = { ...prev, [itemId]: { ...current, [field]: value } };
-      try { localStorage.setItem("ml_item_taxes", JSON.stringify(updated)); } catch { /* ignore */ }
-      return updated;
-    });
-  };
 
   // ── Enriched items ─────────────────────────────────────
   const enrichedItems = useMemo<EnrichedItem[]>(() => {
@@ -330,23 +310,18 @@ export default function RentabilidadPage() {
     <>
       {[1, 2, 3, 4, 5].map((i) => (
         <tr key={i}>
-          <td colSpan={11} style={{ padding: "6px 0" }}>
-            <div className="skeleton" style={{ height: "36px", borderRadius: "var(--radius)" }} />
+          <td colSpan={11} style={{ padding: "4px 0" }}>
+            <div className="skeleton" style={{ height: "32px", borderRadius: "var(--radius)" }} />
           </td>
         </tr>
       ))}
     </>
   );
 
-  // ── Detail drawer tax calc ─────────────────────────────
-  const drawerTax = selectedItem ? taxes[selectedItem.itemId] ?? { iva: "", ibb: "", otherLabel: "", otherPct: "" } : null;
-  const taxTotal = drawerTax ? (
-    (parseFloat(drawerTax.iva) || 0) +
-    (parseFloat(drawerTax.ibb) || 0) +
-    (parseFloat(drawerTax.otherPct) || 0)
-  ) : 0;
-  const taxAmount = selectedItem ? (taxTotal / 100) * selectedItem.grossRevenue : 0;
-  const netAfterTax = selectedItem?.realNetProfit != null ? selectedItem.realNetProfit - taxAmount : null;
+  // shared td style for data cells
+  const tdMono: React.CSSProperties = {
+    padding: "6px 8px", fontFamily: "var(--font-mono)", fontSize: "12px",
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
@@ -393,27 +368,27 @@ export default function RentabilidadPage() {
         )}
 
         {!fetchError && (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <div className="rent-table-wrap">
+            <table className="rent-table" style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
-                  <SortHeader label="Producto"         col="title"         sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                  <SortHeader label="Categoría"        col="categoryName"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                  <SortHeader label="Unidades"         col="unitsSold"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="P. Lista (int.)"  col="precioLista"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="P. ML"            col="avgMlPrice"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Revenue"          col="grossRevenue"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Comisión ML"      col="totalSaleFees" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Producto"        col="title"         sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader label="Categoría"       col="categoryName"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader label="Uds."            col="unitsSold"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Lista"           col="precioLista"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="P. ML"           col="avgMlPrice"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Revenue"         col="grossRevenue"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Comisión"        col="totalSaleFees" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                   <th style={{
-                    padding: "8px 12px", textAlign: "right", fontSize: "10px", fontWeight: "600",
+                    padding: "6px 8px", textAlign: "right", fontSize: "10px", fontWeight: "600",
                     letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)",
                     fontFamily: "var(--font-mono)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap",
                   }}>
                     Impuestos
                   </th>
-                  <SortHeader label="Costo Total"      col="totalCost"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Ganancia Neta"    col="realNetProfit" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Margen"           col="realMargin"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Costo"           col="totalCost"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Ganancia"        col="realNetProfit" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader label="Margen"          col="realMargin"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                 </tr>
               </thead>
               <tbody>
@@ -421,10 +396,6 @@ export default function RentabilidadPage() {
                   <SkeletonRows />
                 ) : (
                   sortedItems.map((item) => {
-                    const itemTax = taxes[item.itemId];
-                    const itemTaxTotal = itemTax
-                      ? (parseFloat(itemTax.iva) || 0) + (parseFloat(itemTax.ibb) || 0) + (parseFloat(itemTax.otherPct) || 0)
-                      : 0;
                     const commPct = item.grossRevenue > 0
                       ? (item.totalSaleFees / item.grossRevenue) * 100 : 0;
 
@@ -432,63 +403,50 @@ export default function RentabilidadPage() {
                       <tr
                         key={item.itemId}
                         onClick={() => setSelectedItem(item)}
-                        style={{
-                          borderBottom: "1px solid var(--border)",
-                          transition: "background 0.1s",
-                          cursor: "pointer",
-                        }}
+                        style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" }}
                         onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
                         onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                       >
                         {/* Producto */}
-                        <td style={{ padding: "10px 12px", maxWidth: "220px" }}>
+                        <td style={{ ...tdMono, maxWidth: "180px" }}>
                           <p style={{
-                            fontFamily: "var(--font-display)", fontSize: "13px", fontWeight: "600",
+                            fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600",
                             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                           }}>
                             {item.title}
                           </p>
-                          <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "2px" }}>
+                          <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>
                             {item.itemId}
                           </p>
                         </td>
 
                         {/* Categoría */}
-                        <td style={{
-                          padding: "10px 12px", fontFamily: "var(--font-mono)", fontSize: "12px",
-                          color: "var(--text-muted)", maxWidth: "160px",
-                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                        }}>
+                        <td style={{ ...tdMono, maxWidth: "110px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {item.categoryName}
                         </td>
 
-                        {/* Unidades */}
-                        <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--text-muted)" }}>
+                        {/* Uds. */}
+                        <td style={{ ...tdMono, textAlign: "right", color: "var(--text-muted)" }}>
                           {item.unitsSold}
                         </td>
 
-                        {/* P. Lista (int.) */}
-                        <td style={{
-                          padding: "10px 12px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: "13px",
-                          color: item.precioLista !== null ? "var(--text)" : "var(--text-dim)",
-                        }}>
+                        {/* Lista */}
+                        <td style={{ ...tdMono, textAlign: "right", color: item.precioLista !== null ? "var(--text)" : "var(--text-dim)" }}>
                           {item.precioLista !== null ? formatARS(item.precioLista) : "—"}
                         </td>
 
                         {/* P. ML */}
-                        <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                        <td style={{ ...tdMono, textAlign: "right" }}>
                           {item.avgMlPrice !== null ? (
                             <div>
-                              <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px" }}>
-                                {formatARS(item.avgMlPrice)}
-                              </span>
+                              <span>{formatARS(item.avgMlPrice)}</span>
                               {item.precioLista !== null && item.precioLista > 0 && (
                                 <span style={{
-                                  display: "block", fontFamily: "var(--font-mono)", fontSize: "10px",
+                                  display: "block", fontSize: "10px",
                                   color: item.avgMlPrice >= item.precioLista ? "var(--green)" : "var(--yellow)",
                                 }}>
                                   {item.avgMlPrice >= item.precioLista ? "+" : ""}
-                                  {(((item.avgMlPrice - item.precioLista) / item.precioLista) * 100).toFixed(1)}% vs lista
+                                  {(((item.avgMlPrice - item.precioLista) / item.precioLista) * 100).toFixed(1)}%
                                 </span>
                               )}
                             </div>
@@ -498,46 +456,36 @@ export default function RentabilidadPage() {
                         </td>
 
                         {/* Revenue */}
-                        <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: "13px" }}>
+                        <td style={{ ...tdMono, textAlign: "right" }}>
                           {formatARS(item.grossRevenue)}
                         </td>
 
-                        {/* Comisión ML: monto + % */}
-                        <td style={{ padding: "10px 12px", textAlign: "right" }}>
-                          <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", color: "var(--red)" }}>
-                            -{formatARS(item.totalSaleFees)}
-                          </span>
-                          <span style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)" }}>
+                        {/* Comisión: monto + % */}
+                        <td style={{ ...tdMono, textAlign: "right" }}>
+                          <span style={{ color: "var(--red)" }}>-{formatARS(item.totalSaleFees)}</span>
+                          <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>
                             {commPct.toFixed(1)}%
                           </span>
                         </td>
 
                         {/* Impuestos */}
-                        <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                        <td style={{ ...tdMono, textAlign: "right" }}>
                           <span
-                            title="Hacé click en la fila para configurar impuestos por producto"
-                            style={{
-                              fontFamily: "var(--font-mono)", fontSize: "12px",
-                              color: itemTaxTotal > 0 ? "var(--yellow)" : "var(--text-dim)",
-                              cursor: "help",
-                            }}
+                            title="Hacé click en la fila para ver el detalle"
+                            style={{ color: "var(--text-dim)", cursor: "help" }}
                           >
-                            {itemTaxTotal > 0 ? `${itemTaxTotal.toFixed(1)}%` : "—"}
+                            —
                           </span>
                         </td>
 
-                        {/* Costo Total */}
-                        <td style={{
-                          padding: "10px 12px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: "13px",
-                          color: item.totalCost !== null ? "var(--text)" : "var(--text-dim)",
-                        }}>
+                        {/* Costo */}
+                        <td style={{ ...tdMono, textAlign: "right", color: item.totalCost !== null ? "var(--text)" : "var(--text-dim)" }}>
                           {item.totalCost !== null ? `-${formatARS(item.totalCost)}` : "—"}
                         </td>
 
-                        {/* Ganancia Neta */}
+                        {/* Ganancia */}
                         <td style={{
-                          padding: "10px 12px", textAlign: "right",
-                          fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: "600",
+                          ...tdMono, textAlign: "right", fontWeight: "600",
                           color: item.realNetProfit === null
                             ? "var(--text-dim)"
                             : item.realNetProfit >= 0 ? "var(--green)" : "var(--red)",
@@ -546,7 +494,7 @@ export default function RentabilidadPage() {
                         </td>
 
                         {/* Margen */}
-                        <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                        <td style={{ ...tdMono, textAlign: "right" }}>
                           <MarginText margin={item.realMargin} />
                         </td>
                       </tr>
@@ -617,7 +565,7 @@ export default function RentabilidadPage() {
                   <p style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: "800", marginBottom: "2px" }}>
                     {formatARS(cat.grossRevenue)}
                   </p>
-                  <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginBottom: "12px" }}>
+                  <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginBottom: "8px" }}>
                     revenue bruto · {cat.unitsSold} u.
                   </p>
 
@@ -842,15 +790,14 @@ export default function RentabilidadPage() {
           {/* Panel */}
           <div style={{
             position: "fixed", top: 0, right: 0, bottom: 0,
-            width: "min(440px, 100vw)",
+            width: "min(420px, 100vw)",
             background: "var(--surface)", borderLeft: "1px solid var(--border)",
             zIndex: 101, overflowY: "auto",
             display: "flex", flexDirection: "column",
           }}>
             {/* Header */}
             <div style={{
-              padding: "24px 24px 20px",
-              borderBottom: "1px solid var(--border)",
+              padding: "24px 24px 20px", borderBottom: "1px solid var(--border)",
               display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px",
             }}>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -909,115 +856,19 @@ export default function RentabilidadPage() {
                 </div>
               </div>
 
-              {/* Tax inputs */}
-              <div>
-                <p style={{ ...labelStyle, marginBottom: "14px" }}>Impuestos (sobre revenue)</p>
-                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                  {/* IVA */}
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-                    <label style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", flex: 1 }}>IVA</label>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <input
-                        type="number" min="0" max="100" step="0.1"
-                        value={drawerTax?.iva ?? ""}
-                        placeholder="21"
-                        onChange={(e) => updateTax(selectedItem.itemId, "iva", e.target.value)}
-                        style={{
-                          background: "var(--surface-2)", border: "1px solid var(--border)",
-                          borderRadius: "var(--radius)", padding: "6px 10px",
-                          color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "13px",
-                          outline: "none", width: "80px", textAlign: "right",
-                        }}
-                      />
-                      <span style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>%</span>
-                    </div>
-                  </div>
-
-                  {/* IBB */}
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-                    <label style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", flex: 1 }}>Ingresos Brutos</label>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <input
-                        type="number" min="0" max="100" step="0.1"
-                        value={drawerTax?.ibb ?? ""}
-                        placeholder="3"
-                        onChange={(e) => updateTax(selectedItem.itemId, "ibb", e.target.value)}
-                        style={{
-                          background: "var(--surface-2)", border: "1px solid var(--border)",
-                          borderRadius: "var(--radius)", padding: "6px 10px",
-                          color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "13px",
-                          outline: "none", width: "80px", textAlign: "right",
-                        }}
-                      />
-                      <span style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>%</span>
-                    </div>
-                  </div>
-
-                  {/* Otros */}
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-                    <input
-                      type="text"
-                      value={drawerTax?.otherLabel ?? ""}
-                      placeholder="Otro impuesto"
-                      onChange={(e) => updateTax(selectedItem.itemId, "otherLabel", e.target.value)}
-                      style={{
-                        background: "var(--surface-2)", border: "1px solid var(--border)",
-                        borderRadius: "var(--radius)", padding: "6px 10px",
-                        color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "13px",
-                        outline: "none", flex: 1,
-                      }}
-                    />
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
-                      <input
-                        type="number" min="0" max="100" step="0.1"
-                        value={drawerTax?.otherPct ?? ""}
-                        placeholder="0"
-                        onChange={(e) => updateTax(selectedItem.itemId, "otherPct", e.target.value)}
-                        style={{
-                          background: "var(--surface-2)", border: "1px solid var(--border)",
-                          borderRadius: "var(--radius)", padding: "6px 10px",
-                          color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "13px",
-                          outline: "none", width: "80px", textAlign: "right",
-                        }}
-                      />
-                      <span style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>%</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Tax summary */}
-                {taxTotal > 0 && (
-                  <div style={{ marginTop: "16px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
-                        Impuestos totales ({taxTotal.toFixed(1)}%)
-                      </span>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--red)" }}>
-                        -{formatARS(taxAmount)}
-                      </span>
-                    </div>
-                    <div style={{
-                      borderTop: "1px solid var(--border)", paddingTop: "10px",
-                      display: "flex", justifyContent: "space-between", alignItems: "center",
-                    }}>
-                      <span style={{ fontSize: "14px", fontFamily: "var(--font-display)", fontWeight: "700" }}>
-                        Ganancia neta real
-                      </span>
-                      <span style={{
-                        fontFamily: "var(--font-mono)", fontSize: "16px", fontWeight: "700",
-                        color: netAfterTax === null ? "var(--text-dim)"
-                          : netAfterTax >= 0 ? "var(--green)" : "var(--red)",
-                      }}>
-                        {netAfterTax !== null ? formatARS(netAfterTax) : "—"}
-                      </span>
-                    </div>
-                    {netAfterTax !== null && selectedItem.grossRevenue > 0 && (
-                      <p style={{ fontSize: "11px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", textAlign: "right" }}>
-                        Margen neto: {((netAfterTax / selectedItem.grossRevenue) * 100).toFixed(1)}%
-                      </p>
-                    )}
-                  </div>
-                )}
+              {/* Taxes placeholder */}
+              <div style={{
+                padding: "16px",
+                background: "var(--surface-2)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+              }}>
+                <p style={{ ...labelStyle, marginBottom: "8px" }}>Impuestos</p>
+                <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.5" }}>
+                  Los impuestos se calculan automáticamente desde las órdenes de ML.
+                  <br />
+                  <span style={{ color: "var(--yellow)" }}>Próximamente disponible.</span>
+                </p>
               </div>
 
               {/* Unit info */}
@@ -1049,6 +900,11 @@ export default function RentabilidadPage() {
       )}
 
       <style>{`
+        .rent-table-wrap { overflow-x: visible; }
+        .rent-table td { min-width: 0; }
+        @media (max-width: 1024px) {
+          .rent-table-wrap { overflow-x: auto; }
+        }
         @media (max-width: 768px) {
           .rent-grid { grid-template-columns: 1fr !important; }
         }
