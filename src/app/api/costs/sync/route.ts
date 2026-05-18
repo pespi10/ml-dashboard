@@ -40,43 +40,57 @@ async function mlGet<T>(path: string, accessToken: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-// Fetches all vendor item IDs + their GTIN attribute, returns { ean → { id, title } }
+const STATUSES = ["active", "paused", "closed", "under_review"] as const;
+
+// Fetches all IDs for one status (all pages)
+async function fetchAllIdsByStatus(
+  userId: number,
+  accessToken: string,
+  status: string
+): Promise<string[]> {
+  const ids: string[] = [];
+  let offset = 0;
+  while (true) {
+    const search = await mlGet<{ results: string[]; paging: { total: number } }>(
+      `/users/${userId}/items/search?status=${status}&limit=${ID_PAGE}&offset=${offset}`,
+      accessToken
+    );
+    const page = search.results ?? [];
+    ids.push(...page);
+    offset += page.length;
+    if (page.length === 0 || offset >= (search.paging?.total ?? 0)) break;
+  }
+  return ids;
+}
+
+// Fetches all vendor item IDs across all statuses, then builds { ean → { id, title } }
 async function buildGtinMap(
   userId: number,
   accessToken: string
 ): Promise<Map<string, { id: string; title: string }>> {
-  const map = new Map<string, { id: string; title: string }>();
-  let offset = 0;
+  // Fetch all statuses in parallel, then deduplicate
+  const idsByStatus = await Promise.all(
+    STATUSES.map((s) => fetchAllIdsByStatus(userId, accessToken, s))
+  );
+  const allIds = Array.from(new Set(idsByStatus.flat()));
 
-  while (true) {
-    const search = await mlGet<{ results: string[]; paging: { total: number } }>(
-      `/users/${userId}/items/search?limit=${ID_PAGE}&offset=${offset}`,
+  const map = new Map<string, { id: string; title: string }>();
+
+  // Fetch GTIN attributes in batches of 20
+  for (let i = 0; i < allIds.length; i += ITEM_BATCH) {
+    const chunk = allIds.slice(i, i + ITEM_BATCH);
+    const details = await mlGet<{ code: number; body: MLItemDetail }[]>(
+      `/items?ids=${chunk.join(",")}&attributes=id,title,attributes`,
       accessToken
     );
-
-    const ids = search.results ?? [];
-    if (ids.length === 0) break;
-
-    // Fetch details in batches of 20, requesting only needed attributes
-    for (let i = 0; i < ids.length; i += ITEM_BATCH) {
-      const chunk = ids.slice(i, i + ITEM_BATCH);
-      const details = await mlGet<{ code: number; body: MLItemDetail }[]>(
-        `/items?ids=${chunk.join(",")}&attributes=id,title,attributes`,
-        accessToken
-      );
-
-      for (const entry of details) {
-        if (entry.code !== 200) continue;
-        const item = entry.body;
-        const gtin = item.attributes?.find((a) => a.id === "GTIN")?.value_name;
-        if (gtin) {
-          map.set(gtin.replace(/\D/g, ""), { id: item.id, title: item.title });
-        }
+    for (const entry of details) {
+      if (entry.code !== 200) continue;
+      const item = entry.body;
+      const gtin = item.attributes?.find((a) => a.id === "GTIN")?.value_name;
+      if (gtin) {
+        map.set(gtin.replace(/\D/g, ""), { id: item.id, title: item.title });
       }
     }
-
-    offset += ids.length;
-    if (offset >= (search.paging?.total ?? 0)) break;
   }
 
   return map;
