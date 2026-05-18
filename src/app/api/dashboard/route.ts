@@ -4,6 +4,8 @@ import { getSession } from "@/lib/session";
 import {
   getDashboardStats,
   getDashboardOverview,
+  getDashboardSalesStats,
+  getDashboardStockStats,
   isTokenExpired,
   refreshAccessToken,
 } from "@/lib/ml-api";
@@ -29,6 +31,7 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = request.nextUrl;
   const isOverview = searchParams.get("overview") === "1";
+  const section = searchParams.get("section");
   const parsedPage = Number.parseInt(searchParams.get("page") || "1", 10);
   const parsedLimit = Number.parseInt(searchParams.get("limit") || "50", 10);
   const page = Number.isFinite(parsedPage) ? Math.max(1, parsedPage) : 1;
@@ -37,9 +40,16 @@ export async function GET(request: NextRequest) {
     : 50;
 
   try {
-    const data = isOverview
-      ? await getDashboardOverview(activeTokens)
-      : await getDashboardStats(activeTokens, page, limit);
+    let data;
+    if (isOverview) {
+      data = await getDashboardOverview(activeTokens);
+    } else if (section === "sales") {
+      data = await getDashboardSalesStats(activeTokens, page, limit);
+    } else if (section === "stock") {
+      data = await getDashboardStockStats(activeTokens, page, limit);
+    } else {
+      data = await getDashboardStats(activeTokens, page, limit);
+    }
 
     const response = NextResponse.json(data);
 

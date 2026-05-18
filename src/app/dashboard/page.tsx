@@ -2,7 +2,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { DashboardStats, DashboardOverview } from "@/lib/ml-api";
+import type {
+  DashboardOverview,
+  DashboardSalesStats,
+  DashboardStockStats,
+} from "@/lib/ml-api";
 import { formatARS, pctChange } from "@/lib/ml-api";
 import StatCard from "@/components/ui/StatCard";
 import RevenueChart from "@/components/charts/RevenueChart";
@@ -26,10 +30,12 @@ function SectionSkeleton({ height = 280 }: { height?: number }) {
 
 export default function DashboardPage() {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
-  const [lazyStats, setLazyStats] = useState<DashboardStats | null>(null);
+  const [salesStats, setSalesStats] = useState<DashboardSalesStats | null>(null);
+  const [stockStats, setStockStats] = useState<DashboardStockStats | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(true);
   const [chartLoading, setChartLoading] = useState(true);
   const [tablesLoading, setTablesLoading] = useState(true);
+  const [stockLoading, setStockLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
@@ -52,19 +58,33 @@ export default function DashboardPage() {
     }
   };
 
-  const fetchLazyStats = async () => {
+  const fetchSalesStats = async () => {
     setChartLoading(true);
     setTablesLoading(true);
     try {
-      const res = await fetch("/api/dashboard?page=1&limit=50");
+      const res = await fetch("/api/dashboard?section=sales&page=1&limit=50");
       if (!res.ok) return;
       const data = await res.json();
-      setLazyStats(data);
+      setSalesStats(data);
     } catch {
-      // Lazy sections are non-critical; keep the overview usable.
+      // Lazy sales sections are non-critical; keep the overview usable.
     } finally {
       setChartLoading(false);
       setTablesLoading(false);
+    }
+  };
+
+  const fetchStockStats = async () => {
+    setStockLoading(true);
+    try {
+      const res = await fetch("/api/dashboard?section=stock&page=1&limit=50");
+      if (!res.ok) return;
+      const data = await res.json();
+      setStockStats(data);
+    } catch {
+      // Stock alerts should not block the rest of the overview.
+    } finally {
+      setStockLoading(false);
     }
   };
 
@@ -72,9 +92,14 @@ export default function DashboardPage() {
     setOverviewLoading(true);
     setChartLoading(true);
     setTablesLoading(true);
-    setLazyStats(null);
+    setStockLoading(true);
+    setSalesStats(null);
+    setStockStats(null);
     const ok = await fetchOverview();
-    if (ok) fetchLazyStats();
+    if (ok) {
+      fetchSalesStats();
+      fetchStockStats();
+    }
   };
 
   useEffect(() => {
@@ -130,8 +155,8 @@ export default function DashboardPage() {
   if (!overview) return null;
 
   const ordersChange = pctChange(overview.ordersTotal, overview.ordersPrevTotal);
-  const loadedGmv = lazyStats?.gmv ?? 0;
-  const loadedAvgTicket = lazyStats?.avgTicket ?? 0;
+  const loadedGmv = salesStats?.gmv ?? 0;
+  const loadedAvgTicket = salesStats?.avgTicket ?? 0;
 
   return (
     <div>
@@ -218,8 +243,8 @@ export default function DashboardPage() {
       <div style={{ marginBottom: "24px" }}>
         {chartLoading ? (
           <SectionSkeleton height={280} />
-        ) : lazyStats ? (
-          <RevenueChart data={lazyStats.revenueByDay} />
+        ) : salesStats ? (
+          <RevenueChart data={salesStats.revenueByDay} />
         ) : null}
       </div>
 
@@ -250,9 +275,9 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              {!lazyStats || lazyStats.topItems.length === 0 ? (
+              {!salesStats || salesStats.topItems.length === 0 ? (
                 <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>Sin datos</p>
-              ) : lazyStats.topItems.map((item, i) => (
+              ) : salesStats.topItems.map((item, i) => (
                 <div key={item.id} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
                   <span style={{
                     fontFamily: "var(--font-mono)", fontSize: "11px",
@@ -291,17 +316,17 @@ export default function DashboardPage() {
             marginBottom: "20px",
             display: "flex", alignItems: "center", gap: "8px",
           }}>
-            {lazyStats && lazyStats.stockAlerts.length > 0 && (
+            {stockStats && stockStats.stockAlerts.length > 0 && (
               <span style={{
                 background: "var(--red)", color: "#fff",
                 fontSize: "10px", fontWeight: "700",
                 padding: "2px 7px", borderRadius: "10px",
                 fontFamily: "var(--font-mono)",
-              }}>{lazyStats.stockAlerts.length}</span>
+              }}>{stockStats.stockAlerts.length}</span>
             )}
             Alertas de stock
           </h3>
-          {tablesLoading ? (
+          {stockLoading ? (
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               {[...Array(3)].map((_, i) => (
                 <div key={i} className="skeleton" style={{ height: "44px", borderRadius: "6px" }} />
@@ -309,9 +334,9 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              {!lazyStats || lazyStats.stockAlerts.length === 0 ? (
+              {!stockStats || stockStats.stockAlerts.length === 0 ? (
                 <p style={{ fontSize: "13px", color: "var(--green)" }}>✓ Sin alertas</p>
-              ) : lazyStats.stockAlerts.map((item) => (
+              ) : stockStats.stockAlerts.map((item) => (
                 <a
                   key={item.id}
                   href={item.permalink}

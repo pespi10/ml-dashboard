@@ -153,6 +153,23 @@ export interface DashboardOverview {
   pausedItems: number;
 }
 
+export interface DashboardSalesStats {
+  gmv: number;
+  orders: number;
+  avgTicket: number;
+  topItems: { id: string; title: string; sold: number; revenue: number }[];
+  revenueByDay: { date: string; revenue: number; orders: number }[];
+  page: number;
+  limit: number;
+}
+
+export interface DashboardStockStats {
+  stockAlerts: MLItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 // ── API calls ─────────────────────────────────────────────────────────
 
 export async function getMyItems(tokens: MLTokens): Promise<MLItem[]> {
@@ -396,14 +413,79 @@ export async function getDashboardOverview(tokens: MLTokens): Promise<DashboardO
   };
 }
 
+export async function getDashboardSalesStats(
+  tokens: MLTokens,
+  page = 1,
+  limit = 50
+): Promise<DashboardSalesStats> {
+  const { results: orders, total: ordersTotal } = await getOrdersPage(tokens, page, limit, 30);
+  const gmv = orders.reduce((s, o) => s + o.total_amount, 0);
+  const avgTicket = orders.length > 0 ? gmv / orders.length : 0;
+
+  const byDay: Record<string, { revenue: number; orders: number }> = {};
+  orders.forEach((o) => {
+    const day = o.date_created.split("T")[0];
+    if (!byDay[day]) byDay[day] = { revenue: 0, orders: 0 };
+    byDay[day].revenue += o.total_amount;
+    byDay[day].orders += 1;
+  });
+  const revenueByDay = Object.entries(byDay)
+    .map(([date, v]) => ({ date, ...v }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const itemRevenue: Record<string, { title: string; sold: number; revenue: number }> = {};
+  orders.forEach((o) => {
+    o.order_items.forEach((oi) => {
+      const id = oi.item.id;
+      if (!itemRevenue[id])
+        itemRevenue[id] = { title: oi.item.title, sold: 0, revenue: 0 };
+      itemRevenue[id].sold += oi.quantity;
+      itemRevenue[id].revenue += oi.unit_price * oi.quantity;
+    });
+  });
+  const topItems = Object.entries(itemRevenue)
+    .map(([id, v]) => ({ id, ...v }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 5);
+
+  return {
+    gmv,
+    orders: ordersTotal,
+    avgTicket,
+    topItems,
+    revenueByDay,
+    page,
+    limit,
+  };
+}
+
+export async function getDashboardStockStats(
+  tokens: MLTokens,
+  page = 1,
+  limit = 50
+): Promise<DashboardStockStats> {
+  const itemsPage = await getMyItemsPage(tokens, page, limit, "active");
+  const stockAlerts = itemsPage.results
+    .filter((i) => i.available_quantity <= 3)
+    .sort((a, b) => a.available_quantity - b.available_quantity)
+    .slice(0, 10);
+
+  return {
+    stockAlerts,
+    total: itemsPage.total,
+    page,
+    limit,
+  };
+}
+
 export async function getDashboardStats(
   tokens: MLTokens,
   page = 1,
   limit = 50
 ): Promise<DashboardStats> {
-  const [overview, itemsPage, { results: orders, total: ordersTotal }] = await Promise.all([
+  const [overview, stockStats, { results: orders, total: ordersTotal }] = await Promise.all([
     getDashboardOverview(tokens),
-    getMyItemsPage(tokens, 1, limit, "active"),
+    getDashboardStockStats(tokens, 1, limit),
     getOrdersPage(tokens, page, limit, 30),
   ]);
 
@@ -436,11 +518,6 @@ export async function getDashboardStats(
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, 5);
 
-  const stockAlerts = itemsPage.results
-    .filter((i) => i.available_quantity <= 3)
-    .sort((a, b) => a.available_quantity - b.available_quantity)
-    .slice(0, 10);
-
   const profByItem = getProfitabilityByItem(orders);
   const profByCategory = getProfitabilityByCategory(orders);
 
@@ -464,7 +541,7 @@ export async function getDashboardStats(
     avgTicket,
     topItems,
     revenueByDay,
-    stockAlerts,
+    stockAlerts: stockStats.stockAlerts,
     profitabilityByItem: profByItem.map((i) => ({
       ...i,
       categoryName: catNameMap[i.categoryId] ?? i.categoryId,

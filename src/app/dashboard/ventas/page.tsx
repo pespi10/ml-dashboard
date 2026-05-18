@@ -29,7 +29,7 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   delivered: { label: "Entregado", color: "var(--green)" },
 };
 
-const COLS = "72px 1fr 130px 90px 80px 90px 90px";
+const COLS = "64px minmax(160px, 1.6fr) minmax(92px, 0.9fr) minmax(78px, 0.7fr) minmax(74px, 0.7fr) minmax(82px, 0.7fr) minmax(80px, 0.7fr)";
 
 export default function VentasPage() {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -79,7 +79,7 @@ export default function VentasPage() {
   const hasMore = orders.length < total;
 
   return (
-    <div>
+    <div style={{ minWidth: 0 }}>
       <div style={{
         display: "flex", justifyContent: "space-between",
         alignItems: "flex-end", marginBottom: "28px", flexWrap: "wrap", gap: "12px",
@@ -174,6 +174,7 @@ export default function VentasPage() {
           return (
             <div
               key={order.id}
+              className="sales-row"
               style={{
                 display: "grid",
                 gridTemplateColumns: COLS,
@@ -186,11 +187,11 @@ export default function VentasPage() {
               onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
             >
-              <span style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--text-dim)" }}>
+              <span className="sales-id" style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--text-dim)" }}>
                 #{order.id.toString().slice(-6)}
               </span>
 
-              <div>
+              <div className="sales-product">
                 <p style={{
                   fontSize: "13px", color: "var(--text)",
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
@@ -207,22 +208,22 @@ export default function VentasPage() {
                 </p>
               </div>
 
-              <span style={{
+              <span className="sales-buyer" style={{
                 fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--text-muted)",
                 overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
               }}>
                 {order.buyer.nickname}
               </span>
 
-              <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--text)", textAlign: "right" }}>
+              <span className="sales-money" style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--text)", textAlign: "right" }}>
                 {formatARS(unitPrice)}
               </span>
 
-              <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--red)", textAlign: "right" }}>
+              <span className="sales-money" style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--red)", textAlign: "right" }}>
                 {saleFee > 0 ? formatARS(saleFee) : "—"}
               </span>
 
-              <span style={{
+              <span className="sales-money" style={{
                 fontSize: "12px", fontFamily: "var(--font-mono)", textAlign: "right",
                 fontWeight: profit != null ? "600" : "400",
                 color: profit == null
@@ -234,7 +235,7 @@ export default function VentasPage() {
                 {profit == null ? "—" : `${partialCost ? "~" : ""}${formatARS(profit)}`}
               </span>
 
-              <span style={{
+              <span className="sales-status" style={{
                 fontSize: "11px", fontFamily: "var(--font-display)",
                 fontWeight: "600", color: st.color,
                 display: "flex", alignItems: "center", gap: "5px",
@@ -279,8 +280,34 @@ export default function VentasPage() {
       </div>
 
       <style>{`
+        .sales-row > * { min-width: 0; }
         @media (max-width: 768px) {
           .sales-header { display: none !important; }
+          .sales-row {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            gap: 12px 14px !important;
+            padding: 16px !important;
+            align-items: start !important;
+          }
+          .sales-product {
+            grid-column: 1 / -1;
+            order: 1;
+          }
+          .sales-id {
+            order: 2;
+          }
+          .sales-status {
+            justify-content: flex-end;
+            order: 3;
+          }
+          .sales-buyer {
+            grid-column: 1 / -1;
+            order: 4;
+          }
+          .sales-money {
+            text-align: left !important;
+            order: 5;
+          }
         }
       `}</style>
     </div>
