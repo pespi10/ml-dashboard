@@ -144,9 +144,18 @@ function splitCsvLine(line: string, delim: string): string[] {
   let inQuote = false;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
-    if (ch === '"') { inQuote = !inQuote; continue; }
-    if (ch === delim && !inQuote) { cols.push(cur.trim()); cur = ""; continue; }
-    cur += ch;
+    if (inQuote) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }  // escaped "" → single "
+        else inQuote = false;
+      } else {
+        cur += ch;
+      }
+    } else {
+      if (ch === '"') { inQuote = true; }
+      else if (ch === delim) { cols.push(cur.trim()); cur = ""; }
+      else { cur += ch; }
+    }
   }
   cols.push(cur.trim());
   return cols;
@@ -161,7 +170,15 @@ function extractEanRows(headers: string[], dataRows: string[][]): EanRow[] {
   const iCosto = colIdx(map, "costo", "precio_costo", "costo_neto");
   const iLista = colIdx(map, "precio_lista", "lista", "pvp", "precio_publico", "p_lista");
 
-  if (iEan === -1) return []; // columna EAN obligatoria
+  console.log("[EAN parser] raw headers:", headers);
+  console.log("[EAN parser] norm headers:", headers.map(normCol));
+  console.log("[EAN parser] indices → ean:%d  cod:%d  nom:%d  costo:%d  lista:%d", iEan, iCod, iNom, iCosto, iLista);
+  if (dataRows.length > 0) {
+    console.log("[EAN parser] row[0] raw cols:", dataRows[0]);
+    console.log("[EAN parser] row[0] ean=%s  costo=%s", dataRows[0][iEan], dataRows[0][iCosto]);
+  }
+
+  if (iEan === -1) { console.warn("[EAN parser] EAN column not found — aborting"); return []; }
 
   const rows: EanRow[] = [];
   for (const cols of dataRows) {
@@ -171,20 +188,24 @@ function extractEanRows(headers: string[], dataRows: string[][]): EanRow[] {
     if (costo <= 0) continue;
     rows.push({
       ean,
-      codigo:      iCod   >= 0 ? (cols[iCod]   ?? "").trim() : "",
-      nombre:      iNom   >= 0 ? (cols[iNom]   ?? "").trim() : "",
+      codigo:       iCod   >= 0 ? (cols[iCod]   ?? "").trim() : "",
+      nombre:       iNom   >= 0 ? (cols[iNom]   ?? "").trim() : "",
       costo,
       precio_lista: parseNum(iLista >= 0 ? cols[iLista] : undefined),
     });
   }
+
+  console.log("[EAN parser] parsed %d/%d rows — first 3:", rows.length, dataRows.length, rows.slice(0, 3));
   return rows;
 }
 
 function parseEanCSV(text: string): EanRow[] {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  // Strip UTF-8 BOM if present
+  const clean = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+  const lines = clean.trim().split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [];
   const delim = lines[0].split(";").length > lines[0].split(",").length ? ";" : ",";
-  // Primera fila SIEMPRE es el header
+  console.log("[EAN parser] delimiter detected:", JSON.stringify(delim), "| first line:", lines[0].slice(0, 80));
   const headers = splitCsvLine(lines[0], delim);
   const dataRows = lines.slice(1).map(l => splitCsvLine(l, delim));
   return extractEanRows(headers, dataRows);
