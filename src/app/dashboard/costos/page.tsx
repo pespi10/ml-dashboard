@@ -409,7 +409,7 @@ export default function CostosPage() {
     let totalNotFound = 0;
 
     // Limpiar todo antes de guardar los nuevos datos
-    localStorage.clear();
+    Object.keys(localStorage).forEach(key => localStorage.removeItem(key));
     setCosts({});
     setTitles({});
     setSyncedCosts({});
