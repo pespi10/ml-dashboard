@@ -396,11 +396,11 @@ export function getProfitabilityByItem(orders: MLOrder[]): ProfitabilityItem[] {
     }
   }
 
-  return Object.values(map).map(({ orderIds, ...item }) => {
-    const shippingCost = orderIds.size * SHIPPING_COST_PER_ORDER;
-    const netRevenue = item.grossRevenue - item.totalSaleFees - shippingCost;
+  // totalSaleFees comes from real sale_fee on each order_item — no estimated percentage
+  return Object.values(map).map(({ orderIds: _, ...item }) => {
+    const netRevenue = item.grossRevenue - item.totalSaleFees;
     const margin = item.grossRevenue > 0 ? (netRevenue / item.grossRevenue) * 100 : 0;
-    return { ...item, categoryName: item.categoryId, shippingCost, netRevenue, margin };
+    return { ...item, categoryName: item.categoryId, shippingCost: 0, netRevenue, margin };
   });
 }
 

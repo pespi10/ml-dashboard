@@ -471,10 +471,10 @@ export default function RentabilidadPage() {
                         {/* Impuestos */}
                         <td style={{ ...tdMono, textAlign: "right" }}>
                           <span
-                            title="Hacé click en la fila para ver el detalle"
-                            style={{ color: "var(--text-dim)", cursor: "help" }}
+                            title="IVA e IBB se liquidan en el estado de cuenta mensual de ML, no por orden individual"
+                            style={{ color: "var(--text-dim)", fontSize: "10px", cursor: "help", whiteSpace: "nowrap" }}
                           >
-                            —
+                            Ver estado de cuenta
                           </span>
                         </td>
 
@@ -864,10 +864,8 @@ export default function RentabilidadPage() {
                 borderRadius: "var(--radius)",
               }}>
                 <p style={{ ...labelStyle, marginBottom: "8px" }}>Impuestos</p>
-                <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.5" }}>
-                  Los impuestos se calculan automáticamente desde las órdenes de ML.
-                  <br />
-                  <span style={{ color: "var(--yellow)" }}>Próximamente disponible.</span>
+                <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.6" }}>
+                  Los impuestos (IVA, IBB) son liquidados por ML en el estado de cuenta mensual y no están disponibles por orden individual.
                 </p>
               </div>
 
