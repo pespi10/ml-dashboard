@@ -1,10 +1,10 @@
 // src/app/api/products/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { getMyItems, isTokenExpired, refreshAccessToken } from "@/lib/ml-api";
+import { getMyItemsPage, isTokenExpired, refreshAccessToken } from "@/lib/ml-api";
 import { buildSessionCookieValue, SESSION_COOKIE_OPTIONS } from "@/lib/session";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const tokens = getSession();
   if (!tokens) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -19,9 +19,20 @@ export async function GET() {
     }
   }
 
+  const { searchParams } = request.nextUrl;
+  const parsedPage = Number.parseInt(searchParams.get("page") || "1", 10);
+  const parsedLimit = Number.parseInt(searchParams.get("limit") || "50", 10);
+  const status = searchParams.get("status");
+  const page = Number.isFinite(parsedPage) ? Math.max(1, parsedPage) : 1;
+  const limit = Number.isFinite(parsedLimit)
+    ? Math.min(50, Math.max(1, parsedLimit))
+    : 50;
+  const validStatuses = ["active", "paused", "closed", "under_review"] as const;
+  const itemStatus = validStatuses.find((s) => s === status);
+
   try {
-    const items = await getMyItems(activeTokens);
-    const response = NextResponse.json(items);
+    const data = await getMyItemsPage(activeTokens, page, limit, itemStatus);
+    const response = NextResponse.json(data);
     if (refreshed) {
       response.cookies.set({
         ...SESSION_COOKIE_OPTIONS,

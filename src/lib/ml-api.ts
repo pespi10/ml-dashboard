@@ -188,6 +188,37 @@ export async function getMyItems(tokens: MLTokens): Promise<MLItem[]> {
   return items;
 }
 
+export async function getMyItemsPage(
+  tokens: MLTokens,
+  page: number,
+  limit: number,
+  status?: MLItem["status"]
+): Promise<{ results: MLItem[]; total: number; page: number; limit: number }> {
+  const userId = tokens.user_id;
+  const offset = (page - 1) * limit;
+  const statusParam = status ? `&status=${status}` : "";
+  const data = await mlFetch<{ results: string[]; paging: { total: number } }>(
+    `/users/${userId}/items/search?limit=${limit}&offset=${offset}${statusParam}`,
+    tokens
+  );
+
+  if (!data.results.length) {
+    return { results: [], total: data.paging.total, page, limit };
+  }
+
+  const detailPages = await Promise.all(
+    chunkArray(data.results, 20).map((chunk) =>
+      mlFetch<MLItem[]>(`/items?ids=${chunk.join(",")}`, tokens)
+    )
+  );
+  const results = detailPages
+    .flatMap((details) => details as unknown as { code: number; body: MLItem }[])
+    .filter((r) => r.code === 200)
+    .map((r) => r.body);
+
+  return { results, total: data.paging.total, page, limit };
+}
+
 export async function getOrders(
   tokens: MLTokens,
   days = 30
@@ -370,9 +401,9 @@ export async function getDashboardStats(
   page = 1,
   limit = 50
 ): Promise<DashboardStats> {
-  const [overview, items, { results: orders, total: ordersTotal }] = await Promise.all([
+  const [overview, itemsPage, { results: orders, total: ordersTotal }] = await Promise.all([
     getDashboardOverview(tokens),
-    getMyItems(tokens),
+    getMyItemsPage(tokens, 1, limit, "active"),
     getOrdersPage(tokens, page, limit, 30),
   ]);
 
@@ -405,8 +436,8 @@ export async function getDashboardStats(
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, 5);
 
-  const stockAlerts = items
-    .filter((i) => i.status === "active" && i.available_quantity <= 3)
+  const stockAlerts = itemsPage.results
+    .filter((i) => i.available_quantity <= 3)
     .sort((a, b) => a.available_quantity - b.available_quantity)
     .slice(0, 10);
 

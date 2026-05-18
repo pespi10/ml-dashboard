@@ -21,17 +21,40 @@ const STATUS_COLOR: Record<string, string> = {
 
 export default function ProductosPage() {
   const [items, setItems] = useState<MLItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [filter, setFilter] = useState<"all" | "active" | "paused" | "closed">("all");
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    fetch("/api/products")
+    setLoading(true);
+    fetch("/api/products?page=1&limit=50")
       .then((r) => r.json())
-      .then(setItems)
+      .then((data) => {
+        setItems(data.results ?? []);
+        setTotal(data.total ?? 0);
+        setPage(data.page ?? 1);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
+
+  const loadMore = () => {
+    if (loadingMore || items.length >= total) return;
+    const nextPage = page + 1;
+    setLoadingMore(true);
+    fetch(`/api/products?page=${nextPage}&limit=50`)
+      .then((r) => r.json())
+      .then((data) => {
+        setItems((prev) => [...prev, ...(data.results ?? [])]);
+        setTotal(data.total ?? total);
+        setPage(data.page ?? nextPage);
+      })
+      .catch(console.error)
+      .finally(() => setLoadingMore(false));
+  };
 
   const filtered = items.filter((i) => {
     const matchStatus = filter === "all" || i.status === filter;
@@ -40,11 +63,12 @@ export default function ProductosPage() {
   });
 
   const counts = {
-    all: items.length,
+    all: total || items.length,
     active: items.filter((i) => i.status === "active").length,
     paused: items.filter((i) => i.status === "paused").length,
     closed: items.filter((i) => i.status === "closed").length,
   };
+  const hasMore = items.length < total;
 
   return (
     <div>
@@ -55,7 +79,7 @@ export default function ProductosPage() {
           fontWeight: "800", letterSpacing: "-0.02em", marginBottom: "4px",
         }}>Productos</h1>
         <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-          {items.length} publicaciones totales
+          Mostrando {items.length} de {total || items.length} publicaciones
         </p>
       </div>
 
@@ -207,6 +231,37 @@ export default function ProductosPage() {
             </span>
           </a>
         ))}
+
+        {!loading && hasMore && (
+          <div style={{
+            padding: "20px",
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "16px",
+          }}>
+            <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+              {items.length} de {total} publicaciones cargadas
+            </span>
+            <button
+              onClick={loadMore}
+              disabled={loadingMore}
+              style={{
+                background: "var(--surface-2)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                padding: "8px 20px",
+                color: loadingMore ? "var(--text-dim)" : "var(--text)",
+                fontFamily: "var(--font-mono)",
+                fontSize: "12px",
+                cursor: loadingMore ? "not-allowed" : "pointer",
+              }}
+            >
+              {loadingMore ? "Cargando..." : "Cargar más"}
+            </button>
+          </div>
+        )}
       </div>
 
       <style>{`
