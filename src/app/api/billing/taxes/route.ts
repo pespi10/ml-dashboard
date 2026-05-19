@@ -17,9 +17,9 @@ async function mlGet<T>(path: string, accessToken: string): Promise<T | { _error
   return res.json() as Promise<T>;
 }
 
-function prevMonthKey(): string {
+function monthKey(monthsBack: number): string {
   const now = new Date();
-  const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const d = new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
@@ -80,12 +80,34 @@ export async function GET() {
     }
   }
 
-  const period = prevMonthKey();
-
-  const raw = await mlGet<MLPerceptionsResponse>(
+  // Try previous month first; if empty, fall back to 2 months ago
+  let period = monthKey(1);
+  let raw = await mlGet<MLPerceptionsResponse>(
     `/billing/integration/periods/key/${period}/perceptions/summary?group=ML`,
     accessToken
   );
+
+  // If first attempt errored or returned no perceptions, try one month further back
+  const firstPerceptions = !("_error" in raw) && Array.isArray((raw as MLPerceptionsResponse).perceptions)
+    ? (raw as MLPerceptionsResponse).perceptions as MLPerception[]
+    : [];
+
+  if ("_error" in raw || firstPerceptions.length === 0) {
+    const fallbackPeriod = monthKey(2);
+    const fallbackRaw = await mlGet<MLPerceptionsResponse>(
+      `/billing/integration/periods/key/${fallbackPeriod}/perceptions/summary?group=ML`,
+      accessToken
+    );
+    if (!("_error" in fallbackRaw)) {
+      const fallbackPerceptions = Array.isArray((fallbackRaw as MLPerceptionsResponse).perceptions)
+        ? (fallbackRaw as MLPerceptionsResponse).perceptions as MLPerception[]
+        : [];
+      if (fallbackPerceptions.length > 0) {
+        period = fallbackPeriod;
+        raw = fallbackRaw;
+      }
+    }
+  }
 
   if ("_error" in raw) {
     return NextResponse.json({ error: (raw as { _error: string })._error }, { status: 502 });

@@ -224,6 +224,10 @@ export default function RentabilidadPage() {
         setShippingCostPerOrder(shippingConfig.costoPorPedido);
         setShippingCostConfirmed(true);
       }
+      // Debug: log first 3 entries of each cost store to diagnose join keys
+      console.log("[rentabilidad] ml_costs_ean (first 3):", Object.entries(synced).slice(0, 3));
+      console.log("[rentabilidad] ml_synced_costs (first 3):", Object.entries(JSON.parse(localStorage.getItem("ml_synced_costs") || "{}")).slice(0, 3));
+      console.log("[rentabilidad] ml_costs (first 3):", Object.entries(stored).slice(0, 3));
     } catch { /* empty localStorage is fine */ }
 
     // Non-blocking shipping fetch — fills in after main data loads
@@ -241,6 +245,8 @@ export default function RentabilidadPage() {
 
     Promise.all([profitFetch, taxFetch])
       .then(([profitData, taxes]) => {
+        // Debug: log first 3 profit items to diagnose join with cost stores
+        console.log("[rentabilidad] profitabilityByItem (first 3):", profitData.profitabilityByItem?.slice(0, 3));
         setData(profitData);
         if (taxes && !("error" in (taxes as object))) setTaxData(taxes);
         setLoading(false);
@@ -619,7 +625,7 @@ export default function RentabilidadPage() {
                           <td style={{ ...tdMono, textAlign: "right" }}>
                             {item.unitTaxEst > 0
                               ? <span style={{ color: "var(--red)" }}>-{formatARS(item.unitTaxEst)}</span>
-                              : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                              : <span style={{ color: "var(--text-dim)" }} title={`IIBB pendiente: ver billing de ${taxMonthName || "abril"}`}>—</span>}
                           </td>
                           <td style={{ ...tdMono, textAlign: "right", color: item.unitCost !== null ? "var(--text)" : "var(--text-dim)" }}>
                             {item.unitCost !== null ? `-${formatARS(item.unitCost)}` : "—"}
@@ -661,7 +667,7 @@ export default function RentabilidadPage() {
                           <td style={{ ...tdMono, textAlign: "right" }}>
                             {item.totalTaxEst > 0
                               ? <span style={{ color: "var(--red)" }}>-{formatARS(item.totalTaxEst)}</span>
-                              : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                              : <span style={{ color: "var(--text-dim)" }} title={`IIBB pendiente: ver billing de ${taxMonthName || "abril"}`}>—</span>}
                           </td>
                           <td style={{ ...tdMono, textAlign: "right", color: item.totalCost !== null ? "var(--text)" : "var(--text-dim)" }}>
                             {item.totalCost !== null ? `-${formatARS(item.totalCost)}` : "—"}
