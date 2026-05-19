@@ -1,6 +1,6 @@
 -- product_costs: stores per-product cost data synced from EAN or direct upload
 create table if not exists product_costs (
-  mla_id       text primary key,
+  ml_id        text primary key,
   ean          text,
   codigo       text,
   nombre       text,

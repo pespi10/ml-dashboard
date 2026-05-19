@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "./supabase";
 
 export interface ProductCost {
-  mla_id: string;
+  ml_id: string;
   ean?: string | null;
   codigo?: string | null;
   nombre?: string | null;
@@ -25,17 +25,18 @@ export async function getProductCosts(): Promise<ProductCost[]> {
 
 export async function upsertProductCosts(costs: ProductCost[]): Promise<void> {
   if (costs.length === 0) return;
+  console.log("upsertProductCosts sample:", JSON.stringify(costs[0]));
   const { error } = await supabaseAdmin
     .from("product_costs")
-    .upsert(costs, { onConflict: "mla_id" });
+    .upsert(costs, { onConflict: "ml_id" });
   if (error) throw error;
 }
 
-export async function deleteProductCost(mlaId: string): Promise<void> {
+export async function deleteProductCost(mlId: string): Promise<void> {
   const { error } = await supabaseAdmin
     .from("product_costs")
     .delete()
-    .eq("mla_id", mlaId);
+    .eq("ml_id", mlId);
   if (error) throw error;
 }
 

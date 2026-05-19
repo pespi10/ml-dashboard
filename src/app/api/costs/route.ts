@@ -5,7 +5,8 @@ import { upsertProductCosts, deleteProductCost } from "@/lib/db";
 import { supabaseAdmin } from "@/lib/supabase";
 
 interface CostRow {
-  mla_id: string;
+  ml_id?: string;
+  mla_id?: string; // accepted for backward compat, normalized to ml_id
   ean?: string | null;
   codigo?: string | null;
   nombre?: string | null;
@@ -22,7 +23,7 @@ export async function GET() {
   const { data, error } = await supabaseAdmin
     .from("product_costs")
     .select("*")
-    .order("mla_id");
+    .order("ml_id");
 
   if (error) {
     console.error("GET /api/costs error:", error);
@@ -45,11 +46,11 @@ export async function POST(request: NextRequest) {
   const rows = Array.isArray(body) ? body : [body];
   if (rows.length === 0) return NextResponse.json({ ok: true, upserted: 0 });
 
-  const valid = rows.filter((r) => r.mla_id);
-  if (valid.length === 0) return NextResponse.json({ error: "mla_id required" }, { status: 400 });
+  const valid = rows.filter((r) => r.ml_id || r.mla_id);
+  if (valid.length === 0) return NextResponse.json({ error: "ml_id required" }, { status: 400 });
 
   const toUpsert = valid.map((r) => ({
-    mla_id: r.mla_id,
+    ml_id: r.ml_id ?? r.mla_id!,
     ean: r.ean ?? null,
     codigo: r.codigo ?? null,
     nombre: r.nombre ?? null,
@@ -61,11 +62,17 @@ export async function POST(request: NextRequest) {
 
   try {
     await upsertProductCosts(toUpsert);
-  } catch (err) {
-    const e = err as Error;
+  } catch (err: unknown) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e = err as any;
     console.error("POST /api/costs error:", e);
     return NextResponse.json(
-      { error: e.message, stack: e.stack, details: String(e) },
+      {
+        error: e?.message ?? String(e),
+        code: e?.code,
+        details: e?.details,
+        hint: e?.hint,
+      },
       { status: 500 }
     );
   }

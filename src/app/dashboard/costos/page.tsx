@@ -11,7 +11,7 @@ import { LOGISTICA_PROPIA_COSTO_POR_PEDIDO } from "@/lib/shipping-config";
 type ParsedRow = { id: string; title: string; cost: number };
 
 type ProductCostRow = {
-  mla_id: string;
+  ml_id: string;
   ean?: string | null;
   codigo?: string | null;
   nombre?: string | null;
@@ -285,11 +285,11 @@ export default function CostosPage() {
         const newTitles: Record<string, string> = {};
         const newSynced: Record<string, SyncedCostEntry> = {};
         for (const row of rows) {
-          newCosts[row.mla_id] = row.costo;
+          newCosts[row.ml_id] = row.costo;
           const displayTitle = row.titulo_ml ?? row.nombre;
-          if (displayTitle) newTitles[row.mla_id] = displayTitle;
+          if (displayTitle) newTitles[row.ml_id] = displayTitle;
           if (row.ean) {
-            newSynced[row.mla_id] = {
+            newSynced[row.ml_id] = {
               ean: row.ean,
               codigo: row.codigo ?? "",
               nombre: row.nombre ?? "",
@@ -387,7 +387,7 @@ export default function CostosPage() {
 
   const handleConfirm = async () => {
     const payload = allParsed.map((r) => ({
-      mla_id: r.id,
+      ml_id: r.id,
       nombre: r.title || null,
       costo: r.cost,
       precio_lista: 0,
@@ -425,7 +425,7 @@ export default function CostosPage() {
       await fetch("/api/costs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mla_id: editingId, costo: val }),
+        body: JSON.stringify({ ml_id: editingId, costo: val }),
       });
       const newCosts = { ...costs, [editingId]: val };
       setCosts(newCosts);
@@ -489,7 +489,7 @@ export default function CostosPage() {
     setSavingToDb(true);
     setSavedToDb(false);
     const payload = matched.map((r) => ({
-      mla_id: r.ml_id!,
+      ml_id: r.ml_id!,
       ean: r.ean,
       codigo: r.codigo,
       nombre: r.nombre,
@@ -498,6 +498,7 @@ export default function CostosPage() {
       precio_lista: r.precio_lista,
       match_method: r.match_method,
     }));
+    console.log("Saving to DB sample:", JSON.stringify(payload[0]));
     try {
       await fetch("/api/costs", {
         method: "POST",
