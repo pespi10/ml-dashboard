@@ -24,7 +24,10 @@ export async function GET() {
     .select("*")
     .order("mla_id");
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("GET /api/costs error:", error);
+    return NextResponse.json({ error: error.message, details: error }, { status: 500 });
+  }
   return NextResponse.json(data ?? []);
 }
 
@@ -58,8 +61,13 @@ export async function POST(request: NextRequest) {
 
   try {
     await upsertProductCosts(toUpsert);
-  } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+  } catch (err) {
+    const e = err as Error;
+    console.error("POST /api/costs error:", e);
+    return NextResponse.json(
+      { error: e.message, stack: e.stack, details: String(e) },
+      { status: 500 }
+    );
   }
 
   return NextResponse.json({ ok: true, upserted: toUpsert.length });
