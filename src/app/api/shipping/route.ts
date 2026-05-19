@@ -10,9 +10,17 @@ interface MLShipment {
   id: number;
   receiver_address?: {
     zip_code?: string;
-    state?: { name?: string };
-    city?: { name?: string };
   };
+}
+
+interface MLShipmentCosts {
+  senders?: Array<{
+    cost?: number;
+    save?: number;
+    discounts?: Array<{ promoted_amount?: number }>;
+    [key: string]: unknown;
+  }>;
+  [key: string]: unknown;
 }
 
 interface OrderWithShipping {
@@ -63,59 +71,79 @@ export async function GET() {
     if (orders.length >= page.paging.total) break;
   }
 
-  // Extract shipping IDs from orders that have them
-  const shippingIds = orders
-    .map((o) => o.shipping?.id)
-    .filter((id): id is number => typeof id === "number" && id > 0);
+  // Extract and deduplicate shipping IDs
+  const uniqueIds = Array.from(new Set(
+    orders
+      .map((o) => o.shipping?.id)
+      .filter((id): id is number => typeof id === "number" && id > 0)
+  ));
 
-  // Deduplicate
-  const uniqueIds = Array.from(new Set(shippingIds));
-
-  // Fetch shipment details in batches of 20 with 200ms delay
+  // Batch-fetch shipment + costs in parallel per shipment, 20 at a time
   const BATCH_SIZE = 20;
   const DELAY_MS = 200;
-  const zipResults: { id: number; zip: string | null }[] = [];
+
+  interface ShipResult {
+    id: number;
+    zip: string | null;
+    senderCost: number | null; // cost the seller pays for ML Envíos
+  }
+
+  const results: ShipResult[] = [];
 
   for (let i = 0; i < uniqueIds.length; i += BATCH_SIZE) {
     const batch = uniqueIds.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.all(
-      batch.map(async (shipId) => {
-        const shipment = await mlGet<MLShipment>(`/shipments/${shipId}`, accessToken);
-        return { id: shipId, zip: shipment?.receiver_address?.zip_code ?? null };
+      batch.map(async (shipId): Promise<ShipResult> => {
+        const [shipment, costs] = await Promise.all([
+          mlGet<MLShipment>(`/shipments/${shipId}`, accessToken),
+          mlGet<MLShipmentCosts>(`/shipments/${shipId}/costs`, accessToken),
+        ]);
+        return {
+          id: shipId,
+          zip: shipment?.receiver_address?.zip_code ?? null,
+          senderCost: costs?.senders?.[0]?.cost ?? null,
+        };
       })
     );
-    zipResults.push(...batchResults);
-    if (i + BATCH_SIZE < uniqueIds.length) {
-      await sleep(DELAY_MS);
-    }
+    results.push(...batchResults);
+    if (i + BATCH_SIZE < uniqueIds.length) await sleep(DELAY_MS);
   }
 
-  // Classify each shipment
+  // Classify and aggregate
   let propiaCount = 0;
-  let mlCount = 0;
+  const mlCosts: number[] = [];
 
-  for (const { zip } of zipResults) {
+  for (const { zip, senderCost } of results) {
     if (isLogisticaPropia(zip)) {
       propiaCount++;
     } else {
-      mlCount++;
+      if (typeof senderCost === "number" && senderCost > 0) {
+        mlCosts.push(senderCost);
+      }
     }
   }
 
-  const total = propiaCount + mlCount;
+  const mlCount = results.length - propiaCount;
+  const total = results.length;
   const propiaRatio = total > 0 ? (propiaCount / total) * 100 : 0;
   const mlRatio = total > 0 ? (mlCount / total) * 100 : 0;
+  const avgMLShippingCost = mlCosts.length > 0
+    ? Math.round(mlCosts.reduce((s, c) => s + c, 0) / mlCosts.length)
+    : 0;
 
   return NextResponse.json({
     totalOrders: orders.length,
     analyzedShipments: total,
+    avgMLShippingCost,
     logisticaPropia: {
       count: propiaCount,
-      totalCost: propiaCount * LOGISTICA_PROPIA_COSTO_POR_PEDIDO,
+      pct: Math.round(propiaRatio * 10) / 10,
       avgCost: LOGISTICA_PROPIA_COSTO_POR_PEDIDO,
     },
     mercadoEnvios: {
       count: mlCount,
+      pct: Math.round(mlRatio * 10) / 10,
+      avgCost: avgMLShippingCost,
     },
     splitRatio: {
       propia: Math.round(propiaRatio * 10) / 10,

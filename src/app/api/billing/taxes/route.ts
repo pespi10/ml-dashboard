@@ -34,11 +34,15 @@ interface MLPerception {
 }
 
 interface MLPerceptionsResponse {
-  perceptions?: MLPerception[] | { summary?: MLPerception[]; [key: string]: unknown };
+  summary?: MLPerception[];                                                              // actual top-level shape
+  perceptions?: MLPerception[] | { summary?: MLPerception[]; [key: string]: unknown };  // fallback shapes
   [key: string]: unknown;
 }
 
 function extractSummary(raw: MLPerceptionsResponse): MLPerception[] {
+  // The real endpoint returns { summary: [...] } at the top level
+  if (Array.isArray(raw.summary)) return raw.summary;
+  // Fallback: nested under perceptions
   const p = raw.perceptions;
   if (!p) return [];
   if (Array.isArray(p)) return p;

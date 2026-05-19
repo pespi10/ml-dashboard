@@ -45,8 +45,9 @@ interface TaxData {
 interface ShippingData {
   totalOrders: number;
   analyzedShipments: number;
-  logisticaPropia: { count: number; totalCost: number; avgCost: number };
-  mercadoEnvios: { count: number };
+  avgMLShippingCost: number;
+  logisticaPropia: { count: number; pct?: number; avgCost?: number };
+  mercadoEnvios: { count: number; pct?: number; avgCost: number };
   splitRatio: { propia: number; ml: number };
 }
 
@@ -1112,12 +1113,12 @@ export default function RentabilidadPage() {
                       <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
                         Mercado Envíos (~{shippingData.splitRatio.ml.toFixed(0)}%)
                       </span>
-                      <span style={{ fontSize: "11px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
-                        ver billing
+                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: shippingData.avgMLShippingCost > 0 ? "var(--red)" : "var(--text-dim)" }}>
+                        {shippingData.avgMLShippingCost > 0 ? `-${formatARS(shippingData.avgMLShippingCost)} /u.` : "ver billing"}
                       </span>
                     </div>
                     <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "2px", lineHeight: "1.5" }}>
-                      Split basado en {shippingData.analyzedShipments} envíos recientes. Costo logística propia: {formatARS(shippingCostPerOrder)}/pedido.
+                      Split basado en {shippingData.analyzedShipments} envíos recientes. Propia: {formatARS(shippingCostPerOrder)}/pedido · ML: promedio de {shippingData.mercadoEnvios.count} envíos.
                     </p>
                   </div>
                 ) : (
