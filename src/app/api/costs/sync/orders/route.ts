@@ -36,15 +36,32 @@ export async function POST() {
   let offset = 0;
   let pages = 0;
 
+  // Try with sort first; fall back to plain URL + date filter if 4xx
+  const DATE_FROM = "2025-01-01T00:00:00.000-00:00";
+  const buildUrl = (useSort: boolean) =>
+    useSort
+      ? `/orders/search?seller=${tokens.user_id}&limit=${ORDER_LIMIT}&offset=${offset}&sort=date_desc&order=date_created.desc`
+      : `/orders/search?seller=${tokens.user_id}&limit=${ORDER_LIMIT}&offset=${offset}&order.date_created.from=${encodeURIComponent(DATE_FROM)}`;
+
+  let useSort = true;
+
   while (pages < MAX_PAGES) {
-    const url = `/orders/search?seller=${tokens.user_id}&limit=${ORDER_LIMIT}&offset=${offset}&sort=date_desc`;
+    const url = buildUrl(useSort);
+    console.log("[sync/orders] fetching:", url);
     let search: OrdersSearchResult;
     try {
       search = await mlGet<OrdersSearchResult>(url, tokens.access_token);
     } catch (err) {
-      console.error("[sync/orders] fetch failed on page", pages, "url:", url, "error:", String(err));
+      const errStr = String(err);
+      // If sort params cause a 400, retry once without them
+      if (useSort && errStr.includes("400")) {
+        console.warn("[sync/orders] sort URL returned 400, retrying without sort");
+        useSort = false;
+        continue;
+      }
+      console.error("[sync/orders] fetch failed on page", pages, "url:", url, "error:", errStr);
       return NextResponse.json(
-        { error: "Failed to fetch orders", detail: String(err), page: pages, url },
+        { error: "Failed to fetch orders", detail: errStr, page: pages, url },
         { status: 502 }
       );
     }
