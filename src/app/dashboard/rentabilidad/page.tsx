@@ -208,21 +208,6 @@ export default function RentabilidadPage() {
 
   // ── Fetch ──────────────────────────────────────────────
   useEffect(() => {
-    // Load costs from Supabase via API
-    fetch("/api/costs")
-      .then((r) => r.ok ? r.json() : [])
-      .then((rows: Array<{ ml_id: string; ean?: string | null; costo: number; precio_lista?: number | null }>) => {
-        const newCosts: Record<string, number> = {};
-        const newSynced: Record<string, SyncedCostEntry> = {};
-        for (const row of rows) {
-          newCosts[row.ml_id] = row.costo;
-          if (row.ean) newSynced[row.ml_id] = { costo: row.costo, precio_lista: row.precio_lista ?? 0 };
-        }
-        setMlCosts(newCosts);
-        setMlSyncedCosts(newSynced);
-      })
-      .catch(() => {});
-
     // Keep shipping config in localStorage
     try {
       const shippingConfig = JSON.parse(localStorage.getItem("shipping_config") || "null");
@@ -245,11 +230,36 @@ export default function RentabilidadPage() {
       .then((r) => r.ok ? r.json() as Promise<TaxData> : null)
       .catch(() => null);
 
-    Promise.all([profitFetch, taxFetch])
-      .then(([profitData, taxes]) => {
-        // Debug: log first 3 profit items to diagnose join with cost stores
-        console.log("[rentabilidad] profitabilityByItem (first 3):", profitData.profitabilityByItem?.slice(0, 3));
+    type CostRow = { ml_id: string; ean?: string | null; costo: number; precio_lista?: number | null };
+    const costsFetch = fetch("/api/costs")
+      .then((r) => r.ok ? r.json() as Promise<CostRow[]> : [])
+      .catch((): CostRow[] => []);
+
+    Promise.all([profitFetch, taxFetch, costsFetch])
+      .then(([profitData, taxes, dbCosts]) => {
+        const profitItems = profitData.profitabilityByItem ?? [];
+
+        console.log("[rentabilidad] total items con ventas:", profitItems.length);
+        console.log("[rentabilidad] primer item:", JSON.stringify(profitItems[0]));
+        console.log("[rentabilidad] items con itemId MLA:", profitItems.filter(i => i.itemId?.startsWith("MLA")).length);
+
+        console.log("[rentabilidad] costos en DB:", dbCosts.length);
+        console.log("[rentabilidad] primer costo:", JSON.stringify(dbCosts[0]));
+
+        const matched = profitItems.filter(i => dbCosts.some(c => c.ml_id === i.itemId));
+        console.log("[rentabilidad] items que matchean con DB:", matched.length);
+
         console.log("[billing/taxes] response:", JSON.stringify(taxes));
+
+        const newCosts: Record<string, number> = {};
+        const newSynced: Record<string, SyncedCostEntry> = {};
+        for (const row of dbCosts) {
+          newCosts[row.ml_id] = row.costo;
+          if (row.ean) newSynced[row.ml_id] = { costo: row.costo, precio_lista: row.precio_lista ?? 0 };
+        }
+        setMlCosts(newCosts);
+        setMlSyncedCosts(newSynced);
+
         setData(profitData);
         if (taxes && !("error" in (taxes as object))) setTaxData(taxes);
         setLoading(false);
