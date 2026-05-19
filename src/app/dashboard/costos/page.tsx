@@ -348,6 +348,8 @@ export default function CostosPage() {
   const [eanPreview, setEanPreview] = useState<EanRow[] | null>(null);
   const [eanParseError, setEanParseError] = useState<string | null>(null);
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
+  const [savingToDb, setSavingToDb] = useState(false);
+  const [savedToDb, setSavedToDb] = useState(false);
   const eanFileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Direct upload handlers ────────────────────────────────────────────────
@@ -479,6 +481,34 @@ export default function CostosPage() {
     const file = e.dataTransfer.files[0];
     if (file) processEanFile(file);
   }, [processEanFile]);
+
+  const saveToDb = async () => {
+    if (!syncProgress) return;
+    const matched = syncProgress.results.filter((r) => r.ml_id !== null);
+    if (!matched.length) return;
+    setSavingToDb(true);
+    setSavedToDb(false);
+    const payload = matched.map((r) => ({
+      mla_id: r.ml_id!,
+      ean: r.ean,
+      codigo: r.codigo,
+      nombre: r.nombre,
+      titulo_ml: r.titulo_ml,
+      costo: r.costo,
+      precio_lista: r.precio_lista,
+      match_method: r.match_method,
+    }));
+    try {
+      await fetch("/api/costs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setSavedToDb(true);
+    } finally {
+      setSavingToDb(false);
+    }
+  };
 
   const runSync = async () => {
     if (!eanRows.length) return;
@@ -782,12 +812,24 @@ export default function CostosPage() {
                     : `Sincronización completa · ${syncProgress.total} productos procesados`}
                 </p>
                 {syncProgress.status === "done" && (
-                  <button
-                    onClick={() => { setSyncProgress(null); }}
-                    style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "6px 14px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: "12px", cursor: "pointer" }}
-                  >
-                    Limpiar
-                  </button>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    {savedToDb && (
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--green)" }}>✓ Guardado</span>
+                    )}
+                    <button
+                      onClick={saveToDb}
+                      disabled={savingToDb || savedToDb}
+                      style={{ background: savedToDb ? "var(--green-dim)" : "var(--yellow)", border: savedToDb ? "1px solid rgba(0,212,160,0.25)" : "none", borderRadius: "var(--radius)", padding: "6px 14px", color: savedToDb ? "var(--green)" : "#000", fontFamily: "var(--font-display)", fontWeight: "700", fontSize: "12px", cursor: savingToDb || savedToDb ? "default" : "pointer", opacity: savingToDb ? 0.7 : 1 }}
+                    >
+                      {savingToDb ? "Guardando…" : `💾 Guardar ${syncProgress.results.filter(r => r.ml_id).length} productos en base de datos`}
+                    </button>
+                    <button
+                      onClick={() => { setSyncProgress(null); setSavedToDb(false); }}
+                      style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "6px 14px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: "12px", cursor: "pointer" }}
+                    >
+                      Limpiar
+                    </button>
+                  </div>
                 )}
               </div>
               {/* Progress bar */}
