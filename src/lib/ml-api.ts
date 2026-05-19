@@ -101,6 +101,7 @@ export interface MLOrder {
   buyer: { id: number; nickname: string };
   taxes?: unknown;
   fee_details?: unknown;
+  shipping?: { id?: number; status?: string } | null;
 }
 
 export interface MLVisit {

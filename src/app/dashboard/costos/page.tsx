@@ -4,6 +4,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 import { formatARS } from "@/lib/ml-api";
+import { LOGISTICA_PROPIA_COSTO_POR_PEDIDO } from "@/lib/shipping-config";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -259,6 +260,11 @@ export default function CostosPage() {
   const [titles, setTitles] = useState<Record<string, string>>({});
   const [syncedCosts, setSyncedCosts] = useState<Record<string, SyncedCostEntry>>({});
 
+  // Shipping config state
+  const [shippingInput, setShippingInput] = useState("");
+  const [shippingOverride, setShippingOverride] = useState<number | null>(null);
+  const [shippingSaved, setShippingSaved] = useState(false);
+
   useEffect(() => {
     try {
       console.log("localStorage keys:", Object.keys(localStorage));
@@ -269,10 +275,31 @@ export default function CostosPage() {
       setSyncedCosts(synced);
       setCosts(c);
       setTitles(t);
+      const shippingConfig = JSON.parse(localStorage.getItem("shipping_config") || "null");
+      if (shippingConfig?.costoPorPedido) {
+        setShippingOverride(shippingConfig.costoPorPedido);
+        setShippingInput(String(shippingConfig.costoPorPedido));
+      }
     } catch {
       // localStorage unavailable or corrupt — leave state as empty
     }
   }, []);
+
+  const saveShippingConfig = () => {
+    const val = parseFloat(shippingInput);
+    if (isNaN(val) || val <= 0) return;
+    localStorage.setItem("shipping_config", JSON.stringify({ costoPorPedido: val }));
+    setShippingOverride(val);
+    setShippingSaved(true);
+    setTimeout(() => setShippingSaved(false), 3000);
+  };
+
+  const clearShippingConfig = () => {
+    localStorage.removeItem("shipping_config");
+    setShippingOverride(null);
+    setShippingInput("");
+    setShippingSaved(false);
+  };
 
   // Direct upload state
   const [dragging, setDragging] = useState(false);
@@ -902,6 +929,73 @@ export default function CostosPage() {
           </div>
         </div>
       )}
+
+      {/* ── SECCIÓN: Configuración de envíos ── */}
+      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "28px" }}>
+        <div style={{ marginBottom: "20px" }}>
+          <p style={{ ...labelStyle, marginBottom: "4px" }}>Configuración de envíos</p>
+          <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+            El valor en código es {formatARS(LOGISTICA_PROPIA_COSTO_POR_PEDIDO)} (pendiente confirmar). Podés sobreescribirlo acá temporalmente.
+          </p>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "24px", flexWrap: "wrap" }}>
+          <div>
+            <label style={{ ...labelStyle, marginBottom: "6px", display: "block" }}>
+              Costo por pedido — logística propia (GBA Norte + CABA)
+            </label>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <input
+                type="number"
+                value={shippingInput}
+                onChange={(e) => { setShippingInput(e.target.value); setShippingSaved(false); }}
+                onKeyDown={(e) => { if (e.key === "Enter") saveShippingConfig(); }}
+                placeholder={String(LOGISTICA_PROPIA_COSTO_POR_PEDIDO)}
+                style={{ ...inputStyle, width: "140px" }}
+              />
+              <button
+                onClick={saveShippingConfig}
+                style={{ background: "var(--yellow)", border: "none", borderRadius: "var(--radius)", padding: "8px 18px", color: "#000", fontFamily: "var(--font-display)", fontWeight: "700", fontSize: "13px", cursor: "pointer" }}
+              >
+                Guardar
+              </button>
+              {shippingOverride !== null && (
+                <button
+                  onClick={clearShippingConfig}
+                  style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "8px 14px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: "12px", cursor: "pointer" }}
+                >
+                  Restaurar default
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <p style={{ ...labelStyle, marginBottom: "4px" }}>Valor activo</p>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <p style={{ fontFamily: "var(--font-display)", fontSize: "22px", fontWeight: "800", color: shippingOverride !== null ? "var(--green)" : "var(--yellow)" }}>
+                {formatARS(shippingOverride ?? LOGISTICA_PROPIA_COSTO_POR_PEDIDO)}
+              </p>
+              {shippingOverride === null && (
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "#ff8c00", background: "rgba(255,140,0,0.1)", border: "1px solid rgba(255,140,0,0.25)", borderRadius: "4px", padding: "2px 7px" }}>
+                  ⚠ pendiente confirmar
+                </span>
+              )}
+              {shippingOverride !== null && (
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--green)", background: "var(--green-dim)", border: "1px solid rgba(0,212,160,0.25)", borderRadius: "4px", padding: "2px 7px" }}>
+                  override activo
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {shippingSaved && (
+          <p style={{ marginTop: "12px", fontSize: "12px", color: "var(--green)", fontFamily: "var(--font-mono)" }}>
+            ✓ Guardado. El badge de advertencia desaparecerá de Rentabilidad.
+          </p>
+        )}
+      </div>
 
       {/* Empty state */}
       {entries.length === 0 && syncedEntries.length === 0 && !preview && (

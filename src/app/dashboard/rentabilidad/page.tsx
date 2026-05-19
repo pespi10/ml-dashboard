@@ -7,6 +7,7 @@ import {
   ResponsiveContainer, Cell,
 } from "recharts";
 import { formatARS } from "@/lib/ml-api";
+import { LOGISTICA_PROPIA_COSTO_POR_PEDIDO } from "@/lib/shipping-config";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -51,6 +52,14 @@ interface TaxData {
   iibbVentas: IIBBGroup;
   iibbEnvios: IIBBGroup;
   combinedRate: number;
+}
+
+interface ShippingData {
+  totalOrders: number;
+  analyzedShipments: number;
+  logisticaPropia: { count: number; totalCost: number; avgCost: number };
+  mercadoEnvios: { count: number };
+  splitRatio: { propia: number; ml: number };
 }
 
 interface EnrichedItem extends ProfitItem {
@@ -170,6 +179,9 @@ export default function RentabilidadPage() {
   const [mlCosts, setMlCosts] = useState<Record<string, number>>({});
   const [mlSyncedCosts, setMlSyncedCosts] = useState<Record<string, SyncedCostEntry>>({});
   const [taxData, setTaxData] = useState<TaxData | null>(null);
+  const [shippingData, setShippingData] = useState<ShippingData | null>(null);
+  const [shippingCostPerOrder, setShippingCostPerOrder] = useState(LOGISTICA_PROPIA_COSTO_POR_PEDIDO);
+  const [shippingCostConfirmed, setShippingCostConfirmed] = useState(false);
 
   // ── Detail drawer state ────────────────────────────────
   const [selectedItem, setSelectedItem] = useState<EnrichedItem | null>(null);
@@ -191,7 +203,18 @@ export default function RentabilidadPage() {
       setMlCosts(stored);
       const synced = JSON.parse(localStorage.getItem("ml_costs_ean") || "{}");
       setMlSyncedCosts(synced);
+      const shippingConfig = JSON.parse(localStorage.getItem("shipping_config") || "null");
+      if (shippingConfig?.costoPorPedido) {
+        setShippingCostPerOrder(shippingConfig.costoPorPedido);
+        setShippingCostConfirmed(true);
+      }
     } catch { /* empty localStorage is fine */ }
+
+    // Non-blocking shipping fetch — fills in after main data loads
+    fetch("/api/shipping")
+      .then((r) => r.ok ? r.json() as Promise<ShippingData> : null)
+      .then((d) => { if (d && !("error" in (d as object))) setShippingData(d); })
+      .catch(() => {});
 
     const profitFetch = fetch("/api/dashboard?section=profitability")
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<DashboardData>; });
@@ -396,6 +419,17 @@ export default function RentabilidadPage() {
               }}>
                 <span style={{ color: "var(--yellow)", fontWeight: "600" }}>IIBB efectivo {taxMonthName}:</span>
                 <span style={{ color: "var(--text)" }}>{taxData.combinedRate.toFixed(2)}%</span>
+              </span>
+            )}
+            {!shippingCostConfirmed && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: "4px",
+                background: "rgba(255,140,0,0.08)", border: "1px solid rgba(255,140,0,0.25)",
+                borderRadius: "20px", padding: "3px 10px",
+                fontFamily: "var(--font-mono)", fontSize: "11px",
+                color: "#ff8c00",
+              }}>
+                ⚠ Costo de logística propia pendiente confirmar
               </span>
             )}
           </div>
@@ -981,6 +1015,51 @@ export default function RentabilidadPage() {
                   </p>
                 )}
               </div>
+
+              {/* Shipping estimate */}
+              {shippingData && (
+                <div style={{
+                  padding: "16px", background: "var(--surface-2)",
+                  border: "1px solid var(--border)", borderRadius: "var(--radius)",
+                }}>
+                  <p style={{ ...labelStyle, marginBottom: "12px" }}>
+                    Envío estimado
+                    {!shippingCostConfirmed && (
+                      <span style={{ color: "#ff8c00", fontWeight: "400", marginLeft: "6px", textTransform: "none" }}>
+                        ⚠ costo pendiente confirmar
+                      </span>
+                    )}
+                  </p>
+                  {(() => {
+                    const propiaUnits = Math.round(selectedItem.unitsSold * (shippingData.splitRatio.propia / 100));
+                    const mlUnits = selectedItem.unitsSold - propiaUnits;
+                    const propiaShippingCost = propiaUnits * shippingCostPerOrder;
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                            Logística propia ({shippingData.splitRatio.propia.toFixed(0)}% · {propiaUnits} u.)
+                          </span>
+                          <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: propiaShippingCost > 0 ? "var(--red)" : "var(--text-dim)" }}>
+                            {propiaShippingCost > 0 ? `-${formatARS(propiaShippingCost)}` : "—"}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                            Mercado Envíos ({shippingData.splitRatio.ml.toFixed(0)}% · {mlUnits} u.)
+                          </span>
+                          <span style={{ fontSize: "11px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+                            ver billing
+                          </span>
+                        </div>
+                        <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "2px", lineHeight: "1.5" }}>
+                          Split basado en {shippingData.analyzedShipments} envíos recientes. Costo logística propia: {formatARS(shippingCostPerOrder)}/pedido.
+                        </p>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
 
               {/* Unit info */}
               {selectedItem.unitCost !== null && (
