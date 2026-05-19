@@ -33,18 +33,9 @@ interface MLPerception {
   [key: string]: unknown;
 }
 
-// ML API returns either perceptions[] or { summary: perceptions[] }
 interface MLPerceptionsResponse {
   perceptions?: MLPerception[] | { summary?: MLPerception[]; [key: string]: unknown };
   [key: string]: unknown;
-}
-
-interface PerceptionDetail {
-  description: string;
-  aliquot: number;
-  amount: number;
-  taxable_amount: number;
-  tax_type: string;
 }
 
 function extractSummary(raw: MLPerceptionsResponse): MLPerception[] {
@@ -55,11 +46,17 @@ function extractSummary(raw: MLPerceptionsResponse): MLPerception[] {
   return Array.isArray(nested) ? nested : [];
 }
 
-function classifyPerception(p: MLPerception): "ventas" | "envios" {
-  const taxType = (p.tax_type ?? "").toUpperCase();
-  const society = (p.society ?? "").toUpperCase();
-  if (society === "MCA" && ["ME", "CBTU", "IBSA"].some((t) => taxType.includes(t))) return "envios";
-  return "ventas";
+function calcRate(perceptions: MLPerception[]): { total: number; rate: number } {
+  const total = perceptions.reduce(
+    (s, p) => s + (typeof p.amount === "number" ? p.amount : 0),
+    0
+  );
+  const maxTaxable = perceptions.reduce(
+    (m, p) => Math.max(m, typeof p.taxable_amount === "number" ? p.taxable_amount : 0),
+    0
+  );
+  const rate = maxTaxable > 0 ? (total / maxTaxable) * 100 : 0;
+  return { total, rate };
 }
 
 export async function GET() {
@@ -85,11 +82,9 @@ export async function GET() {
     accessToken
   );
 
-  let perceptionsList = !("_error" in raw)
-    ? extractSummary(raw as MLPerceptionsResponse)
-    : [];
+  let summary = !("_error" in raw) ? extractSummary(raw as MLPerceptionsResponse) : [];
 
-  if ("_error" in raw || perceptionsList.length === 0) {
+  if ("_error" in raw || summary.length === 0) {
     const fallbackPeriod = monthKey(2);
     console.log("[billing/taxes] first period empty/error, trying fallback:", fallbackPeriod);
     const fallbackRaw = await mlGet<MLPerceptionsResponse>(
@@ -101,55 +96,37 @@ export async function GET() {
       if (fallbackList.length > 0) {
         period = fallbackPeriod;
         raw = fallbackRaw;
-        perceptionsList = fallbackList;
+        summary = fallbackList;
       }
     }
   }
 
-  console.log("[billing/taxes] using period:", period, "| perceptions count:", perceptionsList.length);
+  console.log("[billing/taxes] using period:", period, "| perceptions count:", summary.length);
 
-  if ("_error" in raw && perceptionsList.length === 0) {
+  if ("_error" in raw && summary.length === 0) {
     return NextResponse.json({ error: (raw as { _error: string })._error }, { status: 502 });
   }
 
-  // Effective rate: total_amount / max_taxable_amount (as user specified)
-  const totalAmount = perceptionsList.reduce(
-    (s, p) => s + (typeof p.amount === "number" ? p.amount : 0),
-    0
-  );
-  const maxTaxable =
-    perceptionsList.length > 0
-      ? Math.max(...perceptionsList.map((p) => (typeof p.taxable_amount === "number" ? p.taxable_amount : 0)))
-      : 0;
-  const effectiveRate = maxTaxable > 0 ? (totalAmount / maxTaxable) * 100 : 0;
+  // Split by society: ML = ventas, MCA = envíos
+  const ventasPerceptions = summary.filter((p) => p.society === "ML");
+  const enviosPerceptions = summary.filter((p) => p.society === "MCA");
+
+  const { total: ventasTotal, rate: ventasRate } = calcRate(ventasPerceptions);
+  const { total: enviosTotal, rate: enviosRate } = calcRate(enviosPerceptions);
+  const combinedRate = ventasRate + enviosRate;
 
   console.log(
-    "[billing/taxes] totalAmount:", totalAmount,
-    "maxTaxable:", maxTaxable,
-    "effectiveRate:", effectiveRate
+    "[billing/taxes] ventasRate:", ventasRate,
+    "enviosRate:", enviosRate,
+    "combinedRate:", combinedRate
   );
-
-  // Per-group breakdown for drawer detail
-  const ventas: PerceptionDetail[] = [];
-  const envios: PerceptionDetail[] = [];
-
-  for (const p of perceptionsList) {
-    const clean: PerceptionDetail = {
-      description: typeof p.description === "string" ? p.description : "",
-      aliquot: typeof p.aliquot === "number" ? p.aliquot : 0,
-      amount: typeof p.amount === "number" ? p.amount : 0,
-      taxable_amount: typeof p.taxable_amount === "number" ? p.taxable_amount : 0,
-      tax_type: typeof p.tax_type === "string" ? p.tax_type : "",
-    };
-    if (classifyPerception(p) === "envios") envios.push(clean);
-    else ventas.push(clean);
-  }
 
   return NextResponse.json({
     period,
-    effectiveRate,
-    combinedRate: effectiveRate,
-    iibbVentas: { total: ventas.reduce((s, p) => s + p.amount, 0), effectiveRate: 0, detail: ventas },
-    iibbEnvios: { total: envios.reduce((s, p) => s + p.amount, 0), effectiveRate: 0, detail: envios },
+    ventasRate,
+    enviosRate,
+    combinedRate,
+    iibbVentas: { total: ventasTotal, rate: ventasRate, count: ventasPerceptions.length },
+    iibbEnvios: { total: enviosTotal, rate: enviosRate, count: enviosPerceptions.length },
   });
 }

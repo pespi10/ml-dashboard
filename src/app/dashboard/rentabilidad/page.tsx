@@ -33,25 +33,13 @@ interface SyncedCostEntry {
   precio_lista: number;
 }
 
-interface PerceptionDetail {
-  description: string;
-  aliquot: number;
-  amount: number;
-  taxable_amount: number;
-  tax_type: string;
-}
-
-interface IIBBGroup {
-  total: number;
-  effectiveRate: number;
-  detail: PerceptionDetail[];
-}
-
 interface TaxData {
   period: string;
-  iibbVentas: IIBBGroup;
-  iibbEnvios: IIBBGroup;
+  ventasRate: number;
+  enviosRate: number;
   combinedRate: number;
+  iibbVentas: { total: number; rate: number; count: number };
+  iibbEnvios: { total: number; rate: number; count: number };
 }
 
 interface ShippingData {
@@ -217,17 +205,22 @@ export default function RentabilidadPage() {
     try {
       const stored = JSON.parse(localStorage.getItem("ml_costs") || "{}");
       setMlCosts(stored);
-      const synced = JSON.parse(localStorage.getItem("ml_costs_ean") || "{}");
+
+      // ml_costs_ean may be stored as object {mlaId: entry} or array [[mlaId, entry], ...]
+      const costsRaw = localStorage.getItem("ml_costs_ean");
+      const costsParsed = costsRaw ? JSON.parse(costsRaw) : {};
+      const synced: Record<string, SyncedCostEntry> = Array.isArray(costsParsed)
+        ? Object.fromEntries(costsParsed as [string, SyncedCostEntry][])
+        : (costsParsed as Record<string, SyncedCostEntry>);
       setMlSyncedCosts(synced);
+
       const shippingConfig = JSON.parse(localStorage.getItem("shipping_config") || "null");
       if (shippingConfig?.costoPorPedido) {
         setShippingCostPerOrder(shippingConfig.costoPorPedido);
         setShippingCostConfirmed(true);
       }
-      // Debug: log first 3 entries of each cost store to diagnose join keys
-      console.log("[rentabilidad] ml_costs_ean (first 3):", Object.entries(synced).slice(0, 3));
-      console.log("[rentabilidad] ml_synced_costs (first 3):", Object.entries(JSON.parse(localStorage.getItem("ml_synced_costs") || "{}")).slice(0, 3));
-      console.log("[rentabilidad] ml_costs (first 3):", Object.entries(stored).slice(0, 3));
+      console.log("[rentabilidad] ml_costs_ean entries (first 3):", Object.entries(synced).slice(0, 3));
+      console.log("[rentabilidad] ml_costs entries (first 3):", Object.entries(stored).slice(0, 3));
     } catch { /* empty localStorage is fine */ }
 
     // Non-blocking shipping fetch — fills in after main data loads
@@ -259,7 +252,7 @@ export default function RentabilidadPage() {
   const enrichedItems = useMemo<EnrichedItem[]>(() => {
     if (!data) return [];
     const propiaRatio = shippingData?.splitRatio.propia ?? 0;
-    const taxRate = taxData?.combinedRate ?? 0;
+    const taxRate = taxData?.ventasRate ?? 0; // IIBB sobre ventas del vendedor (no envíos MCA)
     return (data.profitabilityByItem ?? []).map((item) => {
       const synced = mlSyncedCosts[item.itemId];
       const unitCost = synced?.costo ?? mlCosts[item.itemId] ?? null;
@@ -500,8 +493,8 @@ export default function RentabilidadPage() {
                 borderRadius: "20px", padding: "3px 10px",
                 fontFamily: "var(--font-mono)", fontSize: "11px",
               }}>
-                <span style={{ color: "var(--yellow)", fontWeight: "600" }}>IIBB efectivo {taxMonthName}:</span>
-                <span style={{ color: "var(--text)" }}>{taxData.combinedRate.toFixed(2)}%</span>
+                <span style={{ color: "var(--yellow)", fontWeight: "600" }}>IIBB ventas {taxMonthName}:</span>
+                <span style={{ color: "var(--text)" }}>{taxData.ventasRate.toFixed(2)}%{taxData.enviosRate > 0 ? ` (+${taxData.enviosRate.toFixed(2)}% envíos)` : ""}</span>
               </span>
             )}
             {!shippingCostConfirmed && (
@@ -1018,7 +1011,7 @@ export default function RentabilidadPage() {
                       ? [{ label: `Envío (~${shippingData?.splitRatio.propia.toFixed(0) ?? "?"}% logística propia)`, value: selectedItem.totalShippingEst, color: "var(--red)", sign: "-" }]
                       : []),
                     ...(selectedItem.totalTaxEst > 0
-                      ? [{ label: `IIBB (~${taxData?.combinedRate.toFixed(2) ?? "?"}%)`, value: selectedItem.totalTaxEst, color: "var(--red)", sign: "-" }]
+                      ? [{ label: `IIBB ventas (~${taxData?.ventasRate.toFixed(2) ?? "?"}%)`, value: selectedItem.totalTaxEst, color: "var(--red)", sign: "-" }]
                       : []),
                   ].map(({ label, value, color, sign }) => (
                     <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1053,17 +1046,34 @@ export default function RentabilidadPage() {
                 border: "1px solid var(--border)",
                 borderRadius: "var(--radius)",
               }}>
-                <p style={{ ...labelStyle, marginBottom: "12px" }}>Percepciones IIBB</p>
-                {taxData && taxData.combinedRate > 0 ? (
+                <p style={{ ...labelStyle, marginBottom: "12px" }}>
+                  Percepciones IIBB
+                  {taxData && (
+                    <span style={{ color: "var(--text-dim)", fontWeight: "400", marginLeft: "6px", textTransform: "none" }}>
+                      (base {taxMonthName})
+                    </span>
+                  )}
+                </p>
+                {taxData && taxData.ventasRate > 0 ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <span style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                        IIBB efectivo (base {taxMonthName})
+                        IIBB ventas
                       </span>
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: "600", color: "var(--red)" }}>
-                        {taxData.combinedRate.toFixed(2)}% → -{formatARS(selectedItem.totalTaxEst)}
+                        {taxData.ventasRate.toFixed(2)}% → -{formatARS(selectedItem.totalTaxEst)}
                       </span>
                     </div>
+                    {taxData.enviosRate > 0 && (
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                          IIBB envíos (liquidado por ML)
+                        </span>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-dim)" }}>
+                          {taxData.enviosRate.toFixed(2)}%
+                        </span>
+                      </div>
+                    )}
                     <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.5" }}>
                       Estimado sobre revenue bruto. IVA se liquida por separado en billing mensual.
                     </p>
