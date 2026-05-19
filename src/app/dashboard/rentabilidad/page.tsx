@@ -32,6 +32,27 @@ interface SyncedCostEntry {
   precio_lista: number;
 }
 
+interface PerceptionDetail {
+  description: string;
+  aliquot: number;
+  amount: number;
+  taxable_amount: number;
+  tax_type: string;
+}
+
+interface IIBBGroup {
+  total: number;
+  effectiveRate: number;
+  detail: PerceptionDetail[];
+}
+
+interface TaxData {
+  period: string;
+  iibbVentas: IIBBGroup;
+  iibbEnvios: IIBBGroup;
+  combinedRate: number;
+}
+
 interface EnrichedItem extends ProfitItem {
   unitCost: number | null;
   totalCost: number | null;
@@ -148,6 +169,7 @@ export default function RentabilidadPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [mlCosts, setMlCosts] = useState<Record<string, number>>({});
   const [mlSyncedCosts, setMlSyncedCosts] = useState<Record<string, SyncedCostEntry>>({});
+  const [taxData, setTaxData] = useState<TaxData | null>(null);
 
   // ── Detail drawer state ────────────────────────────────
   const [selectedItem, setSelectedItem] = useState<EnrichedItem | null>(null);
@@ -171,9 +193,19 @@ export default function RentabilidadPage() {
       setMlSyncedCosts(synced);
     } catch { /* empty localStorage is fine */ }
 
-    fetch("/api/dashboard?section=profitability")
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then((d: DashboardData) => { setData(d); setLoading(false); })
+    const profitFetch = fetch("/api/dashboard?section=profitability")
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<DashboardData>; });
+
+    const taxFetch = fetch("/api/billing/taxes")
+      .then((r) => r.ok ? r.json() as Promise<TaxData> : null)
+      .catch(() => null);
+
+    Promise.all([profitFetch, taxFetch])
+      .then(([profitData, taxes]) => {
+        setData(profitData);
+        if (taxes && !("error" in (taxes as object))) setTaxData(taxes);
+        setLoading(false);
+      })
       .catch((e: Error) => { setFetchError(e.message); setLoading(false); });
   }, []);
 
@@ -306,6 +338,12 @@ export default function RentabilidadPage() {
   const isProfitable = result.profit > 0;
   const withCostCount = enrichedItems.filter((i) => i.unitCost !== null).length;
 
+  const taxMonthName = useMemo(() => {
+    if (!taxData) return "";
+    const d = new Date(taxData.period + "T12:00:00");
+    return d.toLocaleString("es-AR", { month: "long" });
+  }, [taxData]);
+
   const SkeletonRows = () => (
     <>
       {[1, 2, 3, 4, 5].map((i) => (
@@ -342,12 +380,25 @@ export default function RentabilidadPage() {
       {/* ── SECCIÓN 1: Rentabilidad por producto ─────── */}
       <div style={cardStyle}>
         <div style={{ marginBottom: "20px" }}>
-          <p style={{
-            fontFamily: "var(--font-display)", fontSize: "16px",
-            fontWeight: "700", letterSpacing: "-0.01em", marginBottom: "4px",
-          }}>
-            Rentabilidad por producto
-          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", marginBottom: "4px" }}>
+            <p style={{
+              fontFamily: "var(--font-display)", fontSize: "16px",
+              fontWeight: "700", letterSpacing: "-0.01em",
+            }}>
+              Rentabilidad por producto
+            </p>
+            {taxData && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: "4px",
+                background: "rgba(255,230,0,0.08)", border: "1px solid rgba(255,230,0,0.2)",
+                borderRadius: "20px", padding: "3px 10px",
+                fontFamily: "var(--font-mono)", fontSize: "11px",
+              }}>
+                <span style={{ color: "var(--yellow)", fontWeight: "600" }}>IIBB efectivo {taxMonthName}:</span>
+                <span style={{ color: "var(--text)" }}>{taxData.combinedRate.toFixed(2)}%</span>
+              </span>
+            )}
+          </div>
           <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
             {loading
               ? "Cargando datos de ventas…"
@@ -856,17 +907,79 @@ export default function RentabilidadPage() {
                 </div>
               </div>
 
-              {/* Taxes placeholder */}
+              {/* Taxes section */}
               <div style={{
                 padding: "16px",
                 background: "var(--surface-2)",
                 border: "1px solid var(--border)",
                 borderRadius: "var(--radius)",
               }}>
-                <p style={{ ...labelStyle, marginBottom: "8px" }}>Impuestos</p>
-                <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.6" }}>
-                  Los impuestos (IVA, IBB) son liquidados por ML en el estado de cuenta mensual y no están disponibles por orden individual.
+                <p style={{ ...labelStyle, marginBottom: "12px" }}>
+                  Percepciones IIBB estimadas
+                  {taxData && (
+                    <span style={{ color: "var(--text-dim)", fontWeight: "400", marginLeft: "6px", textTransform: "none" }}>
+                      (base {taxMonthName})
+                    </span>
+                  )}
                 </p>
+                {taxData ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {/* IIBB ventas */}
+                    {taxData.iibbVentas.detail.length > 0 && (
+                      <div>
+                        <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                          Sobre ventas
+                        </p>
+                        {taxData.iibbVentas.detail.map((p, i) => (
+                          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: "4px" }}>
+                            <span style={{ fontSize: "11px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", flex: 1, marginRight: "8px" }}>
+                              {p.description || p.tax_type}
+                            </span>
+                            <span style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--red)", whiteSpace: "nowrap" }}>
+                              -{formatARS(selectedItem.grossRevenue * (p.aliquot / 100))} ({p.aliquot.toFixed(2)}%)
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* IIBB envíos */}
+                    {taxData.iibbEnvios.detail.length > 0 && (
+                      <div style={{ marginTop: "4px" }}>
+                        <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                          Sobre envíos
+                        </p>
+                        {taxData.iibbEnvios.detail.map((p, i) => (
+                          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: "4px" }}>
+                            <span style={{ fontSize: "11px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", flex: 1, marginRight: "8px" }}>
+                              {p.description || p.tax_type}
+                            </span>
+                            <span style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--red)", whiteSpace: "nowrap" }}>
+                              -{formatARS(selectedItem.grossRevenue * (p.aliquot / 100))} ({p.aliquot.toFixed(2)}%)
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Total */}
+                    <div style={{ borderTop: "1px solid var(--border)", paddingTop: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "12px", fontFamily: "var(--font-display)", fontWeight: "600" }}>Total percepciones</span>
+                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", fontWeight: "600", color: "var(--red)" }}>
+                        -{formatARS(selectedItem.grossRevenue * taxData.combinedRate / 100)}
+                        <span style={{ fontWeight: "400", color: "var(--text-dim)", marginLeft: "4px" }}>({taxData.combinedRate.toFixed(2)}%)</span>
+                      </span>
+                    </div>
+
+                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "2px", lineHeight: "1.5" }}>
+                      Estimación basada en alícuotas de {taxMonthName}. IVA se liquida por separado.
+                    </p>
+                  </div>
+                ) : (
+                  <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.6" }}>
+                    Los impuestos (IVA, IBB) son liquidados por ML en el estado de cuenta mensual y no están disponibles por orden individual.
+                  </p>
+                )}
               </div>
 
               {/* Unit info */}

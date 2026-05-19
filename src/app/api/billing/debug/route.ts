@@ -51,7 +51,7 @@ export async function GET() {
       accessToken
     ),
     mlGet<unknown>(
-      `/billing/integration/periods/key/${currentKey}/summary/details?group=ML`,
+      `/billing/integration/periods/key/${currentKey}/summary/details?group=ML&document_type=BILL`,
       accessToken
     ),
     mlGet<unknown>(
@@ -59,7 +59,7 @@ export async function GET() {
       accessToken
     ),
     mlGet<unknown>(
-      `/billing/integration/periods/key/${previousKey}/summary/details?group=ML`,
+      `/billing/integration/periods/key/${previousKey}/summary/details?group=ML&document_type=BILL`,
       accessToken
     ),
   ]);

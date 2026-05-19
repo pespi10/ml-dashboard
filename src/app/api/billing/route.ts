@@ -40,7 +40,7 @@ export async function GET() {
         accessToken
       ),
       mlGet<unknown>(
-        `/billing/integration/periods/key/${periodKey}/summary/details?group=ML`,
+        `/billing/integration/periods/key/${periodKey}/summary/details?group=ML&document_type=BILL`,
         accessToken
       ),
     ]);
