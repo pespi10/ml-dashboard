@@ -257,7 +257,6 @@ export default function RentabilidadPage() {
   // ── Enriched items ─────────────────────────────────────
   const enrichedItems = useMemo<EnrichedItem[]>(() => {
     if (!data) return [];
-    const propiaRatio = shippingData?.splitRatio.propia ?? 0;
     const taxRate = taxData?.ventasRate ?? 0; // IIBB sobre ventas del vendedor (no envíos MCA)
     return (data.profitabilityByItem ?? []).map((item) => {
       const synced = mlSyncedCosts[item.itemId];
@@ -266,10 +265,16 @@ export default function RentabilidadPage() {
       const avgMlPrice = item.unitsSold > 0 ? item.grossRevenue / item.unitsSold : null;
       const precioLista = synced?.precio_lista ?? null;
 
-      // Shipping estimate (logística propia only)
-      const propiaUnits = Math.round(item.unitsSold * propiaRatio / 100);
-      const totalShippingEst = propiaUnits * shippingCostPerOrder;
-      const unitShippingEst = item.unitsSold > 0 ? totalShippingEst / item.unitsSold : 0;
+      // Shipping estimate: expected cost per unit the seller pays
+      // formula: (splitPropia × LOGISTICA_PROPIA + splitML × avgSellerCost) × pctSellerPays
+      const splitPropia  = (shippingData?.splitRatio.propia ?? 0) / 100;
+      const splitML      = (shippingData?.splitRatio.ml ?? 0) / 100;
+      const avgSellerCost = shippingData?.avgSellerCost ?? 0;
+      const pctSellerPays = (shippingData?.pctSellerPays ?? 100) / 100;
+      const unitShippingEst = shippingData
+        ? (splitPropia * shippingCostPerOrder + splitML * avgSellerCost) * pctSellerPays
+        : 0;
+      const totalShippingEst = unitShippingEst * item.unitsSold;
 
       // Tax estimate (IIBB on gross revenue)
       const totalTaxEst = item.grossRevenue * taxRate / 100;
@@ -618,7 +623,9 @@ export default function RentabilidadPage() {
                             <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>{commUnitPct.toFixed(1)}%</span>
                           </td>
                           <td style={{ ...tdMono, textAlign: "right" }}>
-                            {item.unitShippingEst > 0
+                            {shippingData === null
+                              ? <span className="skeleton" style={{ display: "inline-block", width: "40px", height: "12px", borderRadius: "3px" }} />
+                              : item.unitShippingEst > 0
                               ? <span style={{ color: "var(--red)" }}>-{formatARS(item.unitShippingEst)}</span>
                               : <span style={{ color: "var(--text-dim)" }}>—</span>}
                           </td>
@@ -660,7 +667,9 @@ export default function RentabilidadPage() {
                             <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>{commPct.toFixed(1)}%</span>
                           </td>
                           <td style={{ ...tdMono, textAlign: "right" }}>
-                            {item.totalShippingEst > 0
+                            {shippingData === null
+                              ? <span className="skeleton" style={{ display: "inline-block", width: "48px", height: "12px", borderRadius: "3px" }} />
+                              : item.totalShippingEst > 0
                               ? <span style={{ color: "var(--red)" }}>-{formatARS(item.totalShippingEst)}</span>
                               : <span style={{ color: "var(--text-dim)" }}>—</span>}
                           </td>
@@ -1106,35 +1115,43 @@ export default function RentabilidadPage() {
                 </p>
                 {shippingData ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {/* Logística propia */}
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                        Logística propia (~{shippingData.splitRatio.propia.toFixed(0)}%)
+                        Logística propia (~{shippingData.splitRatio.propia.toFixed(0)}% órdenes)
                       </span>
-                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: selectedItem.unitShippingEst > 0 ? "var(--red)" : "var(--text-dim)" }}>
-                        {selectedItem.unitShippingEst > 0 ? `-${formatARS(selectedItem.unitShippingEst)} /u.` : "—"}
+                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--text)" }}>
+                        {formatARS(shippingCostPerOrder)}/pedido
                       </span>
                     </div>
-                    {/* ML Envíos — seller-pays breakdown */}
+                    {/* Mercado Envíos */}
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                       <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", flex: 1, paddingRight: "8px" }}>
-                        ML Envíos (~{shippingData.splitRatio.ml.toFixed(0)}%){"\n"}
+                        Mercado Envíos (~{shippingData.splitRatio.ml.toFixed(0)}% órdenes)
                         {shippingData.pctSellerPays > 0 && (
                           <span style={{ fontSize: "10px", color: "var(--text-dim)", display: "block", marginTop: "2px" }}>
-                            Vendedor paga en {shippingData.pctSellerPays.toFixed(0)}% · comprador en {shippingData.pctBuyerPays.toFixed(0)}%
+                            Vendedor paga en {shippingData.pctSellerPays.toFixed(0)}% de esos envíos
                           </span>
                         )}
                       </span>
-                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: shippingData.avgSellerCost > 0 ? "var(--red)" : "var(--text-dim)", whiteSpace: "nowrap" }}>
-                        {shippingData.avgSellerCost > 0 ? `-${formatARS(shippingData.avgSellerCost)} /u.` : "comprador paga"}
+                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: shippingData.avgSellerCost > 0 ? "var(--text)" : "var(--text-dim)", whiteSpace: "nowrap" }}>
+                        {shippingData.avgSellerCost > 0 ? `${formatARS(shippingData.avgSellerCost)}/pedido prom.` : "comprador paga"}
                       </span>
                     </div>
-                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "2px", lineHeight: "1.5" }}>
-                      Basado en {shippingData.totalAnalyzed} envíos recientes. Propia: {formatARS(shippingCostPerOrder)}/pedido.
+                    {/* Total estimado */}
+                    <div style={{ borderTop: "1px solid var(--border)", paddingTop: "8px", display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: "12px", fontFamily: "var(--font-display)", fontWeight: "600" }}>Envío estimado /u.</span>
+                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", fontWeight: "600", color: selectedItem.unitShippingEst > 0 ? "var(--red)" : "var(--text-dim)" }}>
+                        {selectedItem.unitShippingEst > 0 ? `-${formatARS(selectedItem.unitShippingEst)}` : "—"}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.5" }}>
+                      Basado en {shippingData.totalAnalyzed} envíos recientes.
                     </p>
                   </div>
                 ) : (
                   <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.6" }}>
-                    Envío: datos no disponibles.
+                    Cargando datos de envíos…
                   </p>
                 )}
               </div>
