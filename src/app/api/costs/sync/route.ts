@@ -122,10 +122,8 @@ async function buildItemMaps(userId: number, accessToken: string): Promise<ItemM
 
   console.log("[buildItemMaps] gtinMap size:", gtinMap.size);
   console.log("[buildItemMaps] skuMap size:", skuMap.size);
-  console.log("[buildItemMaps] sellerSkuMap size:", sellerSkuMap.size);
-  console.log("[buildItemMaps] sample seller_sku:", Array.from(sellerSkuMap.entries()).slice(0, 3));
 
-  return { gtinMap, skuMap, sellerSkuMap };
+  return { gtinMap, skuMap };
 }
 
 async function buildEanMapFromOrders(
