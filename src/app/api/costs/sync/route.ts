@@ -29,11 +29,13 @@ interface MLItemDetail {
   id: string;
   title: string;
   attributes: MLAttribute[];
+  seller_sku?: string;
 }
 
 interface ItemMaps {
   gtinMap: Map<string, { id: string; title: string }>;
   skuMap: Map<string, { id: string; title: string }>;
+  sellerSkuMap: Map<string, { id: string; title: string }>;
 }
 
 const ML_BASE = "https://api.mercadolibre.com";
@@ -71,7 +73,7 @@ async function fetchAllIdsByStatus(
   return ids;
 }
 
-// Builds both gtinMap { ean → item } and skuMap { seller_sku → item } in one pass
+// Builds gtinMap, skuMap, and sellerSkuMap in one pass
 async function buildItemMaps(userId: number, accessToken: string): Promise<ItemMaps> {
   const idsByStatus = await Promise.all(
     STATUSES.map((s) => fetchAllIdsByStatus(userId, accessToken, s))
@@ -80,11 +82,14 @@ async function buildItemMaps(userId: number, accessToken: string): Promise<ItemM
 
   const gtinMap = new Map<string, { id: string; title: string }>();
   const skuMap = new Map<string, { id: string; title: string }>();
+  const sellerSkuMap = new Map<string, { id: string; title: string }>();
+
+  const BARCODE_ATTRS = ["GTIN", "EAN", "UPC", "ISBN"];
 
   for (let i = 0; i < allIds.length; i += ITEM_BATCH) {
     const chunk = allIds.slice(i, i + ITEM_BATCH);
     const details = await mlGet<{ code: number; body: MLItemDetail }[]>(
-      `/items?ids=${chunk.join(",")}&attributes=id,title,attributes`,
+      `/items?ids=${chunk.join(",")}&attributes=id,title,attributes,seller_sku`,
       accessToken
     );
     for (const entry of details) {
@@ -92,15 +97,35 @@ async function buildItemMaps(userId: number, accessToken: string): Promise<ItemM
       const item = entry.body;
       const ref = { id: item.id, title: item.title };
 
-      const gtin = item.attributes?.find((a) => a.id === "GTIN")?.value_name;
-      if (gtin) gtinMap.set(gtin.replace(/\D/g, ""), ref);
+      // All barcode-type attributes → gtinMap
+      for (const attrId of BARCODE_ATTRS) {
+        const val = item.attributes?.find((a) => a.id === attrId)?.value_name;
+        if (val) gtinMap.set(val.replace(/\D/g, ""), ref);
+      }
 
-      const sku = item.attributes?.find((a) => a.id === "SELLER_SKU")?.value_name;
-      if (sku) skuMap.set(sku.trim(), ref);
+      // SELLER_SKU attribute → skuMap
+      const skuAttr = item.attributes?.find((a) => a.id === "SELLER_SKU")?.value_name;
+      if (skuAttr) skuMap.set(skuAttr.trim(), ref);
+
+      // PART_NUMBER attribute → skuMap
+      const partNum = item.attributes?.find((a) => a.id === "PART_NUMBER")?.value_name;
+      if (partNum) skuMap.set(partNum.trim(), ref);
+
+      // item.seller_sku (top-level field) → sellerSkuMap + skuMap
+      if (item.seller_sku) {
+        const s = item.seller_sku.trim();
+        sellerSkuMap.set(s, ref);
+        skuMap.set(s, ref);
+      }
     }
   }
 
-  return { gtinMap, skuMap };
+  console.log("[buildItemMaps] gtinMap size:", gtinMap.size);
+  console.log("[buildItemMaps] skuMap size:", skuMap.size);
+  console.log("[buildItemMaps] sellerSkuMap size:", sellerSkuMap.size);
+  console.log("[buildItemMaps] sample seller_sku:", Array.from(sellerSkuMap.entries()).slice(0, 3));
+
+  return { gtinMap, skuMap, sellerSkuMap };
 }
 
 export async function POST(request: NextRequest) {
@@ -121,8 +146,9 @@ export async function POST(request: NextRequest) {
 
   let gtinMap: Map<string, { id: string; title: string }>;
   let skuMap: Map<string, { id: string; title: string }>;
+  let sellerSkuMap: Map<string, { id: string; title: string }>;
   try {
-    ({ gtinMap, skuMap } = await buildItemMaps(tokens.user_id, tokens.access_token));
+    ({ gtinMap, skuMap, sellerSkuMap } = await buildItemMaps(tokens.user_id, tokens.access_token));
   } catch (err) {
     return NextResponse.json(
       { error: "Failed to fetch vendor items", detail: String(err) },
