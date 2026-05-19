@@ -93,7 +93,10 @@ type SortCol =
   | "realNetProfit"
   | "realMargin"
   | "precioLista"
-  | "avgMlPrice";
+  | "avgMlPrice"
+  | "unitSaleFee"
+  | "unitCost"
+  | "unitProfit";
 
 // ── Calculator types ───────────────────────────────────────────────────
 
@@ -186,8 +189,11 @@ export default function RentabilidadPage() {
   // ── Detail drawer state ────────────────────────────────
   const [selectedItem, setSelectedItem] = useState<EnrichedItem | null>(null);
 
+  // ── Table view toggle ──────────────────────────────────
+  const [tableView, setTableView] = useState<"unit" | "totals">("unit");
+
   // ── Sort state ─────────────────────────────────────────
-  const [sortCol, setSortCol] = useState<SortCol>("realNetProfit");
+  const [sortCol, setSortCol] = useState<SortCol>("unitProfit");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   // ── Calculator state ───────────────────────────────────
@@ -281,6 +287,22 @@ export default function RentabilidadPage() {
           if (a.avgMlPrice === null && b.avgMlPrice === null) return 0;
           if (a.avgMlPrice === null) return 1; if (b.avgMlPrice === null) return -1;
           return dir * (a.avgMlPrice - b.avgMlPrice);
+        case "unitSaleFee": {
+          const av = a.unitsSold > 0 ? a.totalSaleFees / a.unitsSold : 0;
+          const bv = b.unitsSold > 0 ? b.totalSaleFees / b.unitsSold : 0;
+          return dir * (av - bv);
+        }
+        case "unitCost":
+          if (a.unitCost === null && b.unitCost === null) return 0;
+          if (a.unitCost === null) return 1; if (b.unitCost === null) return -1;
+          return dir * (a.unitCost - b.unitCost);
+        case "unitProfit": {
+          const av = a.realNetProfit !== null && a.unitsSold > 0 ? a.realNetProfit / a.unitsSold : null;
+          const bv = b.realNetProfit !== null && b.unitsSold > 0 ? b.realNetProfit / b.unitsSold : null;
+          if (av === null && bv === null) return 0;
+          if (av === null) return 1; if (bv === null) return -1;
+          return dir * (av - bv);
+        }
         default: return 0;
       }
     });
@@ -367,11 +389,11 @@ export default function RentabilidadPage() {
     return d.toLocaleString("es-AR", { month: "long" });
   }, [taxData]);
 
-  const SkeletonRows = () => (
+  const SkeletonRows = ({ colSpan }: { colSpan: number }) => (
     <>
       {[1, 2, 3, 4, 5].map((i) => (
         <tr key={i}>
-          <td colSpan={11} style={{ padding: "4px 0" }}>
+          <td colSpan={colSpan} style={{ padding: "4px 0" }}>
             <div className="skeleton" style={{ height: "32px", borderRadius: "var(--radius)" }} />
           </td>
         </tr>
@@ -453,150 +475,161 @@ export default function RentabilidadPage() {
         )}
 
         {!fetchError && (
-          <div className="rent-table-wrap">
-            <table className="rent-table" style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr>
-                  <SortHeader label="Producto"        col="title"         sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                  <SortHeader label="Categoría"       col="categoryName"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                  <SortHeader label="Uds."            col="unitsSold"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Lista"           col="precioLista"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="P. ML"           col="avgMlPrice"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Revenue"         col="grossRevenue"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Comisión"        col="totalSaleFees" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <th style={{
-                    padding: "6px 8px", textAlign: "right", fontSize: "10px", fontWeight: "600",
-                    letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)",
-                    fontFamily: "var(--font-mono)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap",
-                  }}>
-                    Impuestos
-                  </th>
-                  <SortHeader label="Costo"           col="totalCost"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Ganancia"        col="realNetProfit" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                  <SortHeader label="Margen"          col="realMargin"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <SkeletonRows />
-                ) : (
-                  sortedItems.map((item) => {
-                    const commPct = item.grossRevenue > 0
-                      ? (item.totalSaleFees / item.grossRevenue) * 100 : 0;
+          <div>
+            {/* View toggle */}
+            <div style={{ display: "flex", gap: "4px", marginBottom: "16px", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "3px", width: "fit-content" }}>
+              {(["unit", "totals"] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => {
+                    setTableView(v);
+                    setSortCol(v === "unit" ? "unitProfit" : "realNetProfit");
+                    setSortDir("desc");
+                  }}
+                  style={{
+                    background: tableView === v ? "var(--yellow)" : "transparent",
+                    border: "none", borderRadius: "calc(var(--radius) - 2px)",
+                    padding: "5px 16px", cursor: "pointer",
+                    color: tableView === v ? "#000" : "var(--text-muted)",
+                    fontFamily: "var(--font-display)", fontWeight: "600", fontSize: "12px",
+                    transition: "all 0.15s",
+                  }}
+                >
+                  {v === "unit" ? "Por unidad" : "Totales"}
+                </button>
+              ))}
+            </div>
 
-                    return (
-                      <tr
-                        key={item.itemId}
-                        onClick={() => setSelectedItem(item)}
-                        style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" }}
-                        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
-                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                      >
-                        {/* Producto */}
-                        <td style={{ ...tdMono, maxWidth: "180px" }}>
-                          <p style={{
-                            fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600",
-                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                          }}>
-                            {item.title}
-                          </p>
-                          <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>
-                            {item.itemId}
-                          </p>
-                        </td>
+            <div className="rent-table-wrap">
+              <table className="rent-table" style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  {tableView === "unit" ? (
+                    <tr>
+                      <SortHeader label="Producto"      col="title"        sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                      <SortHeader label="Categoría"     col="categoryName" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                      <SortHeader label="P. ML"         col="avgMlPrice"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Comisión u."   col="unitSaleFee"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Costo u."      col="unitCost"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Ganancia u."   col="unitProfit"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Margen"        col="realMargin"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                    </tr>
+                  ) : (
+                    <tr>
+                      <SortHeader label="Producto"      col="title"         sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                      <SortHeader label="Categoría"     col="categoryName"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                      <SortHeader label="Uds."          col="unitsSold"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Revenue"       col="grossRevenue"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Comisión"      col="totalSaleFees" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Costo total"   col="totalCost"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Ganancia"      col="realNetProfit" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Margen"        col="realMargin"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                    </tr>
+                  )}
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <SkeletonRows colSpan={tableView === "unit" ? 7 : 8} />
+                  ) : tableView === "unit" ? (
+                    sortedItems.map((item) => {
+                      const unitSaleFee = item.unitsSold > 0 ? item.totalSaleFees / item.unitsSold : 0;
+                      const unitProfit = item.realNetProfit !== null && item.unitsSold > 0
+                        ? item.realNetProfit / item.unitsSold : null;
+                      const commUnitPct = item.avgMlPrice && item.avgMlPrice > 0
+                        ? (unitSaleFee / item.avgMlPrice) * 100 : 0;
 
-                        {/* Categoría */}
-                        <td style={{ ...tdMono, maxWidth: "110px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {item.categoryName}
-                        </td>
+                      return (
+                        <tr
+                          key={item.itemId}
+                          onClick={() => setSelectedItem(item)}
+                          style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                        >
+                          <td style={{ ...tdMono, maxWidth: "200px" }}>
+                            <p style={{ fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {item.title}
+                            </p>
+                            <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>
+                              {item.itemId}
+                            </p>
+                          </td>
+                          <td style={{ ...tdMono, maxWidth: "120px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {item.categoryName}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>
+                            {item.avgMlPrice !== null ? formatARS(item.avgMlPrice) : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>
+                            <span style={{ color: "var(--red)" }}>-{formatARS(unitSaleFee)}</span>
+                            <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>{commUnitPct.toFixed(1)}%</span>
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right", color: item.unitCost !== null ? "var(--text)" : "var(--text-dim)" }}>
+                            {item.unitCost !== null ? `-${formatARS(item.unitCost)}` : "—"}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right", fontWeight: "600", color: unitProfit === null ? "var(--text-dim)" : unitProfit >= 0 ? "var(--green)" : "var(--red)" }}>
+                            {unitProfit !== null ? formatARS(unitProfit) : "—"}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>
+                            <MarginText margin={item.realMargin} />
+                          </td>
+                        </tr>
+                      );
+                    })
+                  ) : (
+                    sortedItems.map((item) => {
+                      const commPct = item.grossRevenue > 0 ? (item.totalSaleFees / item.grossRevenue) * 100 : 0;
 
-                        {/* Uds. */}
-                        <td style={{ ...tdMono, textAlign: "right", color: "var(--text-muted)" }}>
-                          {item.unitsSold}
-                        </td>
+                      return (
+                        <tr
+                          key={item.itemId}
+                          onClick={() => setSelectedItem(item)}
+                          style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                        >
+                          <td style={{ ...tdMono, maxWidth: "200px" }}>
+                            <p style={{ fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {item.title}
+                            </p>
+                            <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>
+                              {item.itemId}
+                            </p>
+                          </td>
+                          <td style={{ ...tdMono, maxWidth: "120px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {item.categoryName}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right", color: "var(--text-muted)" }}>
+                            {item.unitsSold}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>
+                            {formatARS(item.grossRevenue)}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>
+                            <span style={{ color: "var(--red)" }}>-{formatARS(item.totalSaleFees)}</span>
+                            <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>{commPct.toFixed(1)}%</span>
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right", color: item.totalCost !== null ? "var(--text)" : "var(--text-dim)" }}>
+                            {item.totalCost !== null ? `-${formatARS(item.totalCost)}` : "—"}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right", fontWeight: "600", color: item.realNetProfit === null ? "var(--text-dim)" : item.realNetProfit >= 0 ? "var(--green)" : "var(--red)" }}>
+                            {item.realNetProfit !== null ? formatARS(item.realNetProfit) : "—"}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>
+                            <MarginText margin={item.realMargin} />
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
 
-                        {/* Lista */}
-                        <td style={{ ...tdMono, textAlign: "right", color: item.precioLista !== null ? "var(--text)" : "var(--text-dim)" }}>
-                          {item.precioLista !== null ? formatARS(item.precioLista) : "—"}
-                        </td>
-
-                        {/* P. ML */}
-                        <td style={{ ...tdMono, textAlign: "right" }}>
-                          {item.avgMlPrice !== null ? (
-                            <div>
-                              <span>{formatARS(item.avgMlPrice)}</span>
-                              {item.precioLista !== null && item.precioLista > 0 && (
-                                <span style={{
-                                  display: "block", fontSize: "10px",
-                                  color: item.avgMlPrice >= item.precioLista ? "var(--green)" : "var(--yellow)",
-                                }}>
-                                  {item.avgMlPrice >= item.precioLista ? "+" : ""}
-                                  {(((item.avgMlPrice - item.precioLista) / item.precioLista) * 100).toFixed(1)}%
-                                </span>
-                              )}
-                            </div>
-                          ) : (
-                            <span style={{ color: "var(--text-dim)" }}>—</span>
-                          )}
-                        </td>
-
-                        {/* Revenue */}
-                        <td style={{ ...tdMono, textAlign: "right" }}>
-                          {formatARS(item.grossRevenue)}
-                        </td>
-
-                        {/* Comisión: monto + % */}
-                        <td style={{ ...tdMono, textAlign: "right" }}>
-                          <span style={{ color: "var(--red)" }}>-{formatARS(item.totalSaleFees)}</span>
-                          <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>
-                            {commPct.toFixed(1)}%
-                          </span>
-                        </td>
-
-                        {/* Impuestos */}
-                        <td style={{ ...tdMono, textAlign: "right" }}>
-                          <span
-                            title="IVA e IBB se liquidan en el estado de cuenta mensual de ML, no por orden individual"
-                            style={{ color: "var(--text-dim)", fontSize: "10px", cursor: "help", whiteSpace: "nowrap" }}
-                          >
-                            Ver estado de cuenta
-                          </span>
-                        </td>
-
-                        {/* Costo */}
-                        <td style={{ ...tdMono, textAlign: "right", color: item.totalCost !== null ? "var(--text)" : "var(--text-dim)" }}>
-                          {item.totalCost !== null ? `-${formatARS(item.totalCost)}` : "—"}
-                        </td>
-
-                        {/* Ganancia */}
-                        <td style={{
-                          ...tdMono, textAlign: "right", fontWeight: "600",
-                          color: item.realNetProfit === null
-                            ? "var(--text-dim)"
-                            : item.realNetProfit >= 0 ? "var(--green)" : "var(--red)",
-                        }}>
-                          {item.realNetProfit !== null ? formatARS(item.realNetProfit) : "—"}
-                        </td>
-
-                        {/* Margen */}
-                        <td style={{ ...tdMono, textAlign: "right" }}>
-                          <MarginText margin={item.realMargin} />
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-
-            {!loading && sortedItems.length === 0 && !fetchError && (
-              <p style={{
-                textAlign: "center", padding: "32px",
-                color: "var(--text-muted)", fontSize: "13px", fontFamily: "var(--font-mono)",
-              }}>
-                Sin ventas en los últimos 30 días
-              </p>
-            )}
+              {!loading && sortedItems.length === 0 && !fetchError && (
+                <p style={{ textAlign: "center", padding: "32px", color: "var(--text-muted)", fontSize: "13px", fontFamily: "var(--font-mono)" }}>
+                  Sin ventas en los últimos 30 días
+                </p>
+              )}
+            </div>
           </div>
         )}
       </div>
