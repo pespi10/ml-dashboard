@@ -247,6 +247,7 @@ export default function RentabilidadPage() {
       .then(([profitData, taxes]) => {
         // Debug: log first 3 profit items to diagnose join with cost stores
         console.log("[rentabilidad] profitabilityByItem (first 3):", profitData.profitabilityByItem?.slice(0, 3));
+        console.log("[billing/taxes] response:", JSON.stringify(taxes));
         setData(profitData);
         if (taxes && !("error" in (taxes as object))) setTaxData(taxes);
         setLoading(false);
@@ -1052,70 +1053,24 @@ export default function RentabilidadPage() {
                 border: "1px solid var(--border)",
                 borderRadius: "var(--radius)",
               }}>
-                <p style={{ ...labelStyle, marginBottom: "12px" }}>
-                  Percepciones IIBB estimadas
-                  {taxData && (
-                    <span style={{ color: "var(--text-dim)", fontWeight: "400", marginLeft: "6px", textTransform: "none" }}>
-                      (base {taxMonthName})
-                    </span>
-                  )}
-                </p>
+                <p style={{ ...labelStyle, marginBottom: "12px" }}>Percepciones IIBB</p>
                 {taxData && taxData.combinedRate > 0 ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {/* IIBB ventas */}
-                    {taxData.iibbVentas.detail.length > 0 && (
-                      <div>
-                        <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                          Sobre ventas
-                        </p>
-                        {taxData.iibbVentas.detail.map((p, i) => (
-                          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: "4px" }}>
-                            <span style={{ fontSize: "11px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", flex: 1, marginRight: "8px" }}>
-                              {p.description || p.tax_type}
-                            </span>
-                            <span style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--red)", whiteSpace: "nowrap" }}>
-                              -{formatARS(selectedItem.grossRevenue * (p.aliquot / 100))} ({p.aliquot.toFixed(2)}%)
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* IIBB envíos */}
-                    {taxData.iibbEnvios.detail.length > 0 && (
-                      <div style={{ marginTop: "4px" }}>
-                        <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                          Sobre envíos
-                        </p>
-                        {taxData.iibbEnvios.detail.map((p, i) => (
-                          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: "4px" }}>
-                            <span style={{ fontSize: "11px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", flex: 1, marginRight: "8px" }}>
-                              {p.description || p.tax_type}
-                            </span>
-                            <span style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--red)", whiteSpace: "nowrap" }}>
-                              -{formatARS(selectedItem.grossRevenue * (p.aliquot / 100))} ({p.aliquot.toFixed(2)}%)
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Total */}
-                    <div style={{ borderTop: "1px solid var(--border)", paddingTop: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: "12px", fontFamily: "var(--font-display)", fontWeight: "600" }}>Total percepciones</span>
-                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", fontWeight: "600", color: "var(--red)" }}>
-                        -{formatARS(selectedItem.grossRevenue * taxData.combinedRate / 100)}
-                        <span style={{ fontWeight: "400", color: "var(--text-dim)", marginLeft: "4px" }}>({taxData.combinedRate.toFixed(2)}%)</span>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                        IIBB efectivo (base {taxMonthName})
+                      </span>
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: "600", color: "var(--red)" }}>
+                        {taxData.combinedRate.toFixed(2)}% → -{formatARS(selectedItem.totalTaxEst)}
                       </span>
                     </div>
-
-                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "2px", lineHeight: "1.5" }}>
-                      Estimación basada en alícuotas de {taxMonthName}. IVA se liquida por separado.
+                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.5" }}>
+                      Estimado sobre revenue bruto. IVA se liquida por separado en billing mensual.
                     </p>
                   </div>
                 ) : (
                   <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.6" }}>
-                    IIBB: datos del período actual en proceso. Referencia {taxMonthName}: ver billing.
+                    IIBB: datos del período actual en proceso. Ver billing de {taxMonthName || "mes anterior"}.
                   </p>
                 )}
               </div>

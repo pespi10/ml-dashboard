@@ -19,8 +19,8 @@ async function mlGet<T>(path: string, accessToken: string): Promise<T | { _error
 
 function monthKey(monthsBack: number): string {
   const now = new Date();
-  const d = new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+  const prevMonth = new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
+  return prevMonth.toISOString().slice(0, 7) + "-01";
 }
 
 interface MLPerception {
@@ -33,8 +33,9 @@ interface MLPerception {
   [key: string]: unknown;
 }
 
+// ML API returns either perceptions[] or { summary: perceptions[] }
 interface MLPerceptionsResponse {
-  perceptions?: MLPerception[];
+  perceptions?: MLPerception[] | { summary?: MLPerception[]; [key: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -46,24 +47,19 @@ interface PerceptionDetail {
   tax_type: string;
 }
 
-function classifyPerception(p: MLPerception): "ventas" | "envios" | "other" {
-  const taxType = (p.tax_type ?? "").toUpperCase();
-  const society = (p.society ?? "").toUpperCase();
-
-  // IIBB sobre ventas
-  if (["IB", "CGMV", "CIBT"].some((t) => taxType.includes(t))) return "ventas";
-
-  // IIBB sobre envíos (MCA society)
-  if (society === "MCA" && ["ME", "CBTU", "IBSA"].some((t) => taxType.includes(t))) return "envios";
-
-  return "other";
+function extractSummary(raw: MLPerceptionsResponse): MLPerception[] {
+  const p = raw.perceptions;
+  if (!p) return [];
+  if (Array.isArray(p)) return p;
+  const nested = (p as { summary?: MLPerception[] }).summary;
+  return Array.isArray(nested) ? nested : [];
 }
 
-function calcGroup(items: PerceptionDetail[]) {
-  const total = items.reduce((s, p) => s + p.amount, 0);
-  const maxBase = items.reduce((m, p) => Math.max(m, p.taxable_amount), 0);
-  const effectiveRate = maxBase > 0 ? (total / maxBase) * 100 : 0;
-  return { total, effectiveRate, detail: items };
+function classifyPerception(p: MLPerception): "ventas" | "envios" {
+  const taxType = (p.tax_type ?? "").toUpperCase();
+  const society = (p.society ?? "").toUpperCase();
+  if (society === "MCA" && ["ME", "CBTU", "IBSA"].some((t) => taxType.includes(t))) return "envios";
+  return "ventas";
 }
 
 export async function GET() {
@@ -80,47 +76,64 @@ export async function GET() {
     }
   }
 
-  // Try previous month first; if empty, fall back to 2 months ago
+  // Always use previous month; fall back to 2 months ago if empty
   let period = monthKey(1);
+  console.log("[billing/taxes] trying period:", period);
+
   let raw = await mlGet<MLPerceptionsResponse>(
     `/billing/integration/periods/key/${period}/perceptions/summary?group=ML`,
     accessToken
   );
 
-  // If first attempt errored or returned no perceptions, try one month further back
-  const firstPerceptions = !("_error" in raw) && Array.isArray((raw as MLPerceptionsResponse).perceptions)
-    ? (raw as MLPerceptionsResponse).perceptions as MLPerception[]
+  let perceptionsList = !("_error" in raw)
+    ? extractSummary(raw as MLPerceptionsResponse)
     : [];
 
-  if ("_error" in raw || firstPerceptions.length === 0) {
+  if ("_error" in raw || perceptionsList.length === 0) {
     const fallbackPeriod = monthKey(2);
+    console.log("[billing/taxes] first period empty/error, trying fallback:", fallbackPeriod);
     const fallbackRaw = await mlGet<MLPerceptionsResponse>(
       `/billing/integration/periods/key/${fallbackPeriod}/perceptions/summary?group=ML`,
       accessToken
     );
     if (!("_error" in fallbackRaw)) {
-      const fallbackPerceptions = Array.isArray((fallbackRaw as MLPerceptionsResponse).perceptions)
-        ? (fallbackRaw as MLPerceptionsResponse).perceptions as MLPerception[]
-        : [];
-      if (fallbackPerceptions.length > 0) {
+      const fallbackList = extractSummary(fallbackRaw as MLPerceptionsResponse);
+      if (fallbackList.length > 0) {
         period = fallbackPeriod;
         raw = fallbackRaw;
+        perceptionsList = fallbackList;
       }
     }
   }
 
-  if ("_error" in raw) {
+  console.log("[billing/taxes] using period:", period, "| perceptions count:", perceptionsList.length);
+
+  if ("_error" in raw && perceptionsList.length === 0) {
     return NextResponse.json({ error: (raw as { _error: string })._error }, { status: 502 });
   }
 
-  const perceptionsRaw: MLPerception[] = Array.isArray((raw as MLPerceptionsResponse).perceptions)
-    ? ((raw as MLPerceptionsResponse).perceptions as MLPerception[])
-    : [];
+  // Effective rate: total_amount / max_taxable_amount (as user specified)
+  const totalAmount = perceptionsList.reduce(
+    (s, p) => s + (typeof p.amount === "number" ? p.amount : 0),
+    0
+  );
+  const maxTaxable =
+    perceptionsList.length > 0
+      ? Math.max(...perceptionsList.map((p) => (typeof p.taxable_amount === "number" ? p.taxable_amount : 0)))
+      : 0;
+  const effectiveRate = maxTaxable > 0 ? (totalAmount / maxTaxable) * 100 : 0;
 
+  console.log(
+    "[billing/taxes] totalAmount:", totalAmount,
+    "maxTaxable:", maxTaxable,
+    "effectiveRate:", effectiveRate
+  );
+
+  // Per-group breakdown for drawer detail
   const ventas: PerceptionDetail[] = [];
   const envios: PerceptionDetail[] = [];
 
-  for (const p of perceptionsRaw) {
+  for (const p of perceptionsList) {
     const clean: PerceptionDetail = {
       description: typeof p.description === "string" ? p.description : "",
       aliquot: typeof p.aliquot === "number" ? p.aliquot : 0,
@@ -128,20 +141,15 @@ export async function GET() {
       taxable_amount: typeof p.taxable_amount === "number" ? p.taxable_amount : 0,
       tax_type: typeof p.tax_type === "string" ? p.tax_type : "",
     };
-    const group = classifyPerception(p);
-    if (group === "ventas") ventas.push(clean);
-    else if (group === "envios") envios.push(clean);
-    else ventas.push(clean); // fallback: treat unknown as ventas
+    if (classifyPerception(p) === "envios") envios.push(clean);
+    else ventas.push(clean);
   }
-
-  const iibbVentas = calcGroup(ventas);
-  const iibbEnvios = calcGroup(envios);
-  const combinedRate = iibbVentas.effectiveRate + iibbEnvios.effectiveRate;
 
   return NextResponse.json({
     period,
-    iibbVentas,
-    iibbEnvios,
-    combinedRate,
+    effectiveRate,
+    combinedRate: effectiveRate,
+    iibbVentas: { total: ventas.reduce((s, p) => s + p.amount, 0), effectiveRate: 0, detail: ventas },
+    iibbEnvios: { total: envios.reduce((s, p) => s + p.amount, 0), effectiveRate: 0, detail: envios },
   });
 }
