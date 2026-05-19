@@ -46,8 +46,13 @@ interface ShippingData {
   totalOrders: number;
   analyzedShipments: number;
   avgMLShippingCost: number;
+  avgSellerCost: number;
+  pctSellerPays: number;
+  pctBuyerPays: number;
+  pctShared: number;
+  totalAnalyzed: number;
   logisticaPropia: { count: number; pct?: number; avgCost?: number };
-  mercadoEnvios: { count: number; pct?: number; avgCost: number };
+  mercadoEnvios: { count: number; pct?: number; avgCost: number; sellerPaidCount?: number; buyerPaidCount?: number };
   splitRatio: { propia: number; ml: number };
 }
 
@@ -1109,16 +1114,22 @@ export default function RentabilidadPage() {
                         {selectedItem.unitShippingEst > 0 ? `-${formatARS(selectedItem.unitShippingEst)} /u.` : "—"}
                       </span>
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                        Mercado Envíos (~{shippingData.splitRatio.ml.toFixed(0)}%)
+                    {/* ML Envíos — seller-pays breakdown */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", flex: 1, paddingRight: "8px" }}>
+                        ML Envíos (~{shippingData.splitRatio.ml.toFixed(0)}%){"\n"}
+                        {shippingData.pctSellerPays > 0 && (
+                          <span style={{ fontSize: "10px", color: "var(--text-dim)", display: "block", marginTop: "2px" }}>
+                            Vendedor paga en {shippingData.pctSellerPays.toFixed(0)}% · comprador en {shippingData.pctBuyerPays.toFixed(0)}%
+                          </span>
+                        )}
                       </span>
-                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: shippingData.avgMLShippingCost > 0 ? "var(--red)" : "var(--text-dim)" }}>
-                        {shippingData.avgMLShippingCost > 0 ? `-${formatARS(shippingData.avgMLShippingCost)} /u.` : "ver billing"}
+                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: shippingData.avgSellerCost > 0 ? "var(--red)" : "var(--text-dim)", whiteSpace: "nowrap" }}>
+                        {shippingData.avgSellerCost > 0 ? `-${formatARS(shippingData.avgSellerCost)} /u.` : "comprador paga"}
                       </span>
                     </div>
                     <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "2px", lineHeight: "1.5" }}>
-                      Split basado en {shippingData.analyzedShipments} envíos recientes. Propia: {formatARS(shippingCostPerOrder)}/pedido · ML: promedio de {shippingData.mercadoEnvios.count} envíos.
+                      Basado en {shippingData.totalAnalyzed} envíos recientes. Propia: {formatARS(shippingCostPerOrder)}/pedido.
                     </p>
                   </div>
                 ) : (

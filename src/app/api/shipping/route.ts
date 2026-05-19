@@ -17,9 +17,14 @@ interface MLShipmentCosts {
   senders?: Array<{
     cost?: number;
     save?: number;
+    gross_amount?: number;
     discounts?: Array<{ promoted_amount?: number }>;
     [key: string]: unknown;
   }>;
+  receiver?: {
+    cost?: number;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
 
@@ -85,7 +90,8 @@ export async function GET() {
   interface ShipResult {
     id: number;
     zip: string | null;
-    senderCost: number | null; // cost the seller pays for ML Envíos
+    senderCost: number;   // what the seller pays (senders[0].cost)
+    receiverCost: number; // what the buyer pays (receiver.cost)
   }
 
   const results: ShipResult[] = [];
@@ -101,7 +107,8 @@ export async function GET() {
         return {
           id: shipId,
           zip: shipment?.receiver_address?.zip_code ?? null,
-          senderCost: costs?.senders?.[0]?.cost ?? null,
+          senderCost: costs?.senders?.[0]?.cost ?? 0,
+          receiverCost: costs?.receiver?.cost ?? 0,
         };
       })
     );
@@ -109,45 +116,62 @@ export async function GET() {
     if (i + BATCH_SIZE < uniqueIds.length) await sleep(DELAY_MS);
   }
 
-  // Classify and aggregate
+  // Classify: logística propia vs ML Envíos
   let propiaCount = 0;
-  const mlCosts: number[] = [];
+  const mlResults: ShipResult[] = [];
 
-  for (const { zip, senderCost } of results) {
-    if (isLogisticaPropia(zip)) {
+  for (const r of results) {
+    if (isLogisticaPropia(r.zip)) {
       propiaCount++;
     } else {
-      if (typeof senderCost === "number" && senderCost > 0) {
-        mlCosts.push(senderCost);
-      }
+      mlResults.push(r);
     }
   }
 
-  const mlCount = results.length - propiaCount;
+  const mlCount = mlResults.length;
   const total = results.length;
-  const propiaRatio = total > 0 ? (propiaCount / total) * 100 : 0;
-  const mlRatio = total > 0 ? (mlCount / total) * 100 : 0;
-  const avgMLShippingCost = mlCosts.length > 0
-    ? Math.round(mlCosts.reduce((s, c) => s + c, 0) / mlCosts.length)
+
+  // ML Envíos breakdown by who pays
+  const sellerPaidCount  = mlResults.filter(r => r.senderCost > 0).length;
+  const buyerPaidCount   = mlResults.filter(r => r.receiverCost > 0 && r.senderCost === 0).length;
+  const sharedCount      = mlResults.filter(r => r.senderCost > 0 && r.receiverCost > 0).length;
+
+  const sellerCosts = mlResults.filter(r => r.senderCost > 0).map(r => r.senderCost);
+  const avgSellerCost = sellerCosts.length > 0
+    ? Math.round(sellerCosts.reduce((s, c) => s + c, 0) / sellerCosts.length)
     : 0;
+
+  const pct = (n: number) => total > 0 ? Math.round((n / total) * 1000) / 10 : 0;
+  const pctOfMl = (n: number) => mlCount > 0 ? Math.round((n / mlCount) * 1000) / 10 : 0;
+
+  const propiaRatio = pct(propiaCount);
+  const mlRatio = pct(mlCount);
 
   return NextResponse.json({
     totalOrders: orders.length,
     analyzedShipments: total,
-    avgMLShippingCost,
+    avgMLShippingCost: avgSellerCost,
+    avgSellerCost,
+    pctSellerPays: pctOfMl(sellerPaidCount),
+    pctBuyerPays: pctOfMl(buyerPaidCount),
+    pctShared: pctOfMl(sharedCount),
+    totalAnalyzed: total,
     logisticaPropia: {
       count: propiaCount,
-      pct: Math.round(propiaRatio * 10) / 10,
+      pct: propiaRatio,
       avgCost: LOGISTICA_PROPIA_COSTO_POR_PEDIDO,
     },
     mercadoEnvios: {
       count: mlCount,
-      pct: Math.round(mlRatio * 10) / 10,
-      avgCost: avgMLShippingCost,
+      pct: mlRatio,
+      avgCost: avgSellerCost,
+      sellerPaidCount,
+      buyerPaidCount,
+      sharedCount,
     },
     splitRatio: {
-      propia: Math.round(propiaRatio * 10) / 10,
-      ml: Math.round(mlRatio * 10) / 10,
+      propia: propiaRatio,
+      ml: mlRatio,
     },
   });
 }
