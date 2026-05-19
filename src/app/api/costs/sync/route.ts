@@ -159,7 +159,7 @@ export async function POST(request: NextRequest) {
   const toUpsert = results
     .filter((r) => r.found && r.ml_id)
     .map((r) => ({
-      mla_id: r.ml_id!,
+      ml_id: r.ml_id!,
       ean: r.ean,
       codigo: r.codigo,
       nombre: r.nombre,
