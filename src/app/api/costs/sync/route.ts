@@ -11,7 +11,7 @@ interface EanItem {
   precio_lista: number;
 }
 
-export type MatchMethod = "gtin" | "order_sku" | "attribute_sku" | "not_found";
+export type MatchMethod = "gtin" | "attribute_sku" | "not_found";
 
 export interface SyncResult extends EanItem {
   ml_id: string | null;
@@ -40,7 +40,6 @@ interface ItemMaps {
 const ML_BASE = "https://api.mercadolibre.com";
 const ITEM_BATCH = 20;
 const ID_PAGE = 100;
-const ORDER_LIMIT = 50;
 
 const STATUSES = ["active", "paused", "closed", "under_review"] as const;
 
@@ -73,7 +72,6 @@ async function fetchAllIdsByStatus(
   return ids;
 }
 
-// Builds gtinMap, skuMap, and sellerSkuMap in one pass
 async function buildItemMaps(userId: number, accessToken: string): Promise<ItemMaps> {
   const idsByStatus = await Promise.all(
     STATUSES.map((s) => fetchAllIdsByStatus(userId, accessToken, s))
@@ -82,7 +80,6 @@ async function buildItemMaps(userId: number, accessToken: string): Promise<ItemM
 
   const gtinMap = new Map<string, { id: string; title: string }>();
   const skuMap = new Map<string, { id: string; title: string }>();
-  const sellerSkuMap = new Map<string, { id: string; title: string }>();
 
   const BARCODE_ATTRS = ["GTIN", "EAN", "UPC", "ISBN"];
 
@@ -97,25 +94,19 @@ async function buildItemMaps(userId: number, accessToken: string): Promise<ItemM
       const item = entry.body;
       const ref = { id: item.id, title: item.title };
 
-      // All barcode-type attributes → gtinMap
       for (const attrId of BARCODE_ATTRS) {
         const val = item.attributes?.find((a) => a.id === attrId)?.value_name;
         if (val) gtinMap.set(val.replace(/\D/g, ""), ref);
       }
 
-      // SELLER_SKU attribute → skuMap
       const skuAttr = item.attributes?.find((a) => a.id === "SELLER_SKU")?.value_name;
       if (skuAttr) skuMap.set(skuAttr.trim(), ref);
 
-      // PART_NUMBER attribute → skuMap
       const partNum = item.attributes?.find((a) => a.id === "PART_NUMBER")?.value_name;
       if (partNum) skuMap.set(partNum.trim(), ref);
 
-      // item.seller_sku (top-level field) → sellerSkuMap + skuMap
       if (item.seller_sku) {
-        const s = item.seller_sku.trim();
-        sellerSkuMap.set(s, ref);
-        skuMap.set(s, ref);
+        skuMap.set(item.seller_sku.trim(), ref);
       }
     }
   }
@@ -124,44 +115,6 @@ async function buildItemMaps(userId: number, accessToken: string): Promise<ItemM
   console.log("[buildItemMaps] skuMap size:", skuMap.size);
 
   return { gtinMap, skuMap };
-}
-
-async function buildEanMapFromOrders(
-  userId: number,
-  accessToken: string
-): Promise<Map<string, { id: string; title: string }>> {
-  const eanMap = new Map<string, { id: string; title: string }>();
-  const dateFrom = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
-  let offset = 0;
-
-  while (true) {
-    const search = await mlGet<{
-      results: Array<{
-        order_items: Array<{
-          item: { id: string; seller_sku?: string | null; title: string };
-        }>;
-      }>;
-      paging: { total: number };
-    }>(
-      `/orders/search?seller=${userId}&order.date_created.from=${dateFrom}&limit=${ORDER_LIMIT}&offset=${offset}`,
-      accessToken
-    );
-    const orders = search.results ?? [];
-    for (const order of orders) {
-      for (const oi of order.order_items ?? []) {
-        const { id, seller_sku, title } = oi.item;
-        if (seller_sku) {
-          eanMap.set(seller_sku.trim(), { id, title });
-        }
-      }
-    }
-    offset += orders.length;
-    if (orders.length === 0 || offset >= (search.paging?.total ?? 0)) break;
-  }
-
-  console.log("[buildEanMapFromOrders] eanMap size:", eanMap.size);
-  console.log("[buildEanMapFromOrders] sample:", Array.from(eanMap.entries()).slice(0, 3));
-  return eanMap;
 }
 
 export async function POST(request: NextRequest) {
@@ -182,14 +135,8 @@ export async function POST(request: NextRequest) {
 
   let gtinMap: Map<string, { id: string; title: string }>;
   let skuMap: Map<string, { id: string; title: string }>;
-  let orderEanMap: Map<string, { id: string; title: string }>;
   try {
-    const [itemMaps, eanMap] = await Promise.all([
-      buildItemMaps(tokens.user_id, tokens.access_token),
-      buildEanMapFromOrders(tokens.user_id, tokens.access_token),
-    ]);
-    ({ gtinMap, skuMap } = itemMaps);
-    orderEanMap = eanMap;
+    ({ gtinMap, skuMap } = await buildItemMaps(tokens.user_id, tokens.access_token));
   } catch (err) {
     return NextResponse.json(
       { error: "Failed to fetch vendor items", detail: String(err) },
@@ -199,7 +146,6 @@ export async function POST(request: NextRequest) {
 
   const results: SyncResult[] = [];
   let matched_by_gtin = 0;
-  let matched_by_order_sku = 0;
   let matched_by_attribute_sku = 0;
   let not_found = 0;
 
@@ -207,7 +153,6 @@ export async function POST(request: NextRequest) {
     const ean = item.ean.replace(/\D/g, "");
     const codigo = item.codigo.trim();
 
-    // 1) GTIN match via item attributes
     const byGtin = gtinMap.get(ean);
     if (byGtin) {
       matched_by_gtin++;
@@ -215,15 +160,6 @@ export async function POST(request: NextRequest) {
       continue;
     }
 
-    // 2) EAN/SKU match via order history seller_sku
-    const byOrder = orderEanMap.get(ean) ?? orderEanMap.get(codigo);
-    if (byOrder) {
-      matched_by_order_sku++;
-      results.push({ ...item, ml_id: byOrder.id, titulo_ml: byOrder.title, found: true, match_method: "order_sku" });
-      continue;
-    }
-
-    // 3) SKU match via item attributes (SELLER_SKU / PART_NUMBER / seller_sku field)
     const bySku = skuMap.get(codigo);
     if (bySku) {
       matched_by_attribute_sku++;
@@ -236,11 +172,9 @@ export async function POST(request: NextRequest) {
   }
 
   console.log("[sync] matched by gtin:", matched_by_gtin);
-  console.log("[sync] matched by order_sku:", matched_by_order_sku);
   console.log("[sync] matched by attribute_sku:", matched_by_attribute_sku);
   console.log("[sync] not found:", not_found);
 
-  // Persist matched results to Supabase (non-fatal if it fails)
   const toUpsert = results
     .filter((r) => r.found && r.ml_id)
     .map((r) => ({
@@ -259,11 +193,10 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({
     matched_by_gtin,
-    matched_by_order_sku,
     matched_by_attribute_sku,
-    matched: matched_by_gtin + matched_by_order_sku + matched_by_attribute_sku,
+    matched: matched_by_gtin + matched_by_attribute_sku,
     not_found,
     results,
-    vendor_items_indexed: { gtin: gtinMap.size, sku: skuMap.size, order_ean: orderEanMap.size },
+    vendor_items_indexed: { gtin: gtinMap.size, sku: skuMap.size },
   });
 }

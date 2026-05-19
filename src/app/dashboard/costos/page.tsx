@@ -29,7 +29,7 @@ type EanRow = {
   precio_lista: number;
 };
 
-type MatchMethod = "gtin" | "sku" | "not_found";
+type MatchMethod = "gtin" | "attribute_sku" | "order_sku" | "not_found";
 
 type SyncResult = EanRow & {
   ml_id: string | null;
@@ -47,6 +47,13 @@ type SyncProgress = {
   matchedBySku: number;
   notFound: number;
   results: SyncResult[];
+};
+
+type OrderSyncResult = {
+  orders_scanned: number;
+  order_skus_found: number;
+  confirmed: number;
+  newMatches: number;
 };
 
 export type SyncedCostEntry = {
@@ -352,6 +359,11 @@ export default function CostosPage() {
   const [savedToDb, setSavedToDb] = useState(false);
   const eanFileInputRef = useRef<HTMLInputElement>(null);
 
+  // Order history sync state
+  const [orderSyncing, setOrderSyncing] = useState(false);
+  const [orderSyncResult, setOrderSyncResult] = useState<OrderSyncResult | null>(null);
+  const [orderSyncError, setOrderSyncError] = useState<string | null>(null);
+
   // ── Direct upload handlers ────────────────────────────────────────────────
 
   const processDirectFile = useCallback((file: File) => {
@@ -511,6 +523,25 @@ export default function CostosPage() {
     }
   };
 
+  const syncByOrders = async () => {
+    setOrderSyncing(true);
+    setOrderSyncResult(null);
+    setOrderSyncError(null);
+    try {
+      const res = await fetch("/api/costs/sync/orders", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setOrderSyncError(data.error ?? "Error desconocido");
+      } else {
+        setOrderSyncResult(data as OrderSyncResult);
+      }
+    } catch {
+      setOrderSyncError("No se pudo conectar al servidor");
+    } finally {
+      setOrderSyncing(false);
+    }
+  };
+
   const runSync = async () => {
     if (!eanRows.length) return;
     const allResults: SyncResult[] = [];
@@ -535,7 +566,7 @@ export default function CostosPage() {
       const data = await res.json();
       allResults.push(...(data.results ?? []));
       totalByGtin = data.matched_by_gtin ?? 0;
-      totalBySku = data.matched_by_sku ?? 0;
+      totalBySku = data.matched_by_attribute_sku ?? 0;
       totalMatched = data.matched ?? (totalByGtin + totalBySku);
       totalNotFound = data.not_found ?? eanRows.length - totalMatched;
     } catch {
@@ -887,6 +918,64 @@ export default function CostosPage() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+      </div>
+
+      {/* ── SECCIÓN 2b: Sincronizar por historial de ventas ── */}
+      <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "28px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+          <div>
+            <p style={{ ...labelStyle, marginBottom: "4px" }}>Sincronizar por historial de ventas</p>
+            <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+              Cruza las últimas 1000 órdenes (seller_sku) con los costos en base de datos
+            </p>
+          </div>
+          <button
+            onClick={syncByOrders}
+            disabled={orderSyncing}
+            style={{
+              background: orderSyncing ? "var(--surface-2)" : "var(--yellow)",
+              border: orderSyncing ? "1px solid var(--border)" : "none",
+              borderRadius: "var(--radius)",
+              padding: "8px 20px",
+              color: orderSyncing ? "var(--text-muted)" : "#000",
+              fontFamily: "var(--font-display)",
+              fontWeight: "700",
+              fontSize: "13px",
+              cursor: orderSyncing ? "default" : "pointer",
+              opacity: orderSyncing ? 0.7 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {orderSyncing ? "Analizando últimas 1000 órdenes..." : "🔗 Sincronizar por historial de ventas"}
+          </button>
+        </div>
+
+        {orderSyncError && (
+          <div style={{ padding: "12px 16px", background: "var(--red-dim)", border: "1px solid rgba(255,68,88,0.25)", borderRadius: "var(--radius)", color: "var(--red)", fontSize: "13px", fontFamily: "var(--font-mono)" }}>
+            ✗ {orderSyncError}
+          </div>
+        )}
+
+        {orderSyncResult && (
+          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+            <div style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px 18px", textAlign: "center" }}>
+              <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: "var(--text-muted)" }}>{orderSyncResult.orders_scanned}</p>
+              <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>órdenes analizadas</p>
+            </div>
+            <div style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px 18px", textAlign: "center" }}>
+              <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: "var(--yellow)" }}>{orderSyncResult.order_skus_found}</p>
+              <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>SKUs únicos en órdenes</p>
+            </div>
+            <div style={{ background: "var(--green-dim)", border: "1px solid rgba(0,212,160,0.2)", borderRadius: "var(--radius)", padding: "10px 18px", textAlign: "center" }}>
+              <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: "var(--green)" }}>{orderSyncResult.confirmed}</p>
+              <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>confirmados</p>
+            </div>
+            <div style={{ background: orderSyncResult.newMatches > 0 ? "var(--green-dim)" : "var(--surface-2)", border: `1px solid ${orderSyncResult.newMatches > 0 ? "rgba(0,212,160,0.2)" : "var(--border)"}`, borderRadius: "var(--radius)", padding: "10px 18px", textAlign: "center" }}>
+              <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: orderSyncResult.newMatches > 0 ? "var(--green)" : "var(--text-dim)" }}>{orderSyncResult.newMatches}</p>
+              <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>nuevos matches</p>
+            </div>
           </div>
         )}
       </div>
