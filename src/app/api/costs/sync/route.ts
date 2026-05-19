@@ -1,6 +1,7 @@
 // src/app/api/costs/sync/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
+import { upsertProductCosts } from "@/lib/db";
 
 interface EanItem {
   ean: string;
@@ -152,6 +153,23 @@ export async function POST(request: NextRequest) {
 
     not_found++;
     results.push({ ...item, ml_id: null, titulo_ml: null, found: false, match_method: "not_found" });
+  }
+
+  // Persist matched results to Supabase (non-fatal if it fails)
+  const toUpsert = results
+    .filter((r) => r.found && r.ml_id)
+    .map((r) => ({
+      mla_id: r.ml_id!,
+      ean: r.ean,
+      codigo: r.codigo,
+      nombre: r.nombre,
+      titulo_ml: r.titulo_ml,
+      costo: r.costo,
+      precio_lista: r.precio_lista,
+      match_method: r.match_method,
+    }));
+  if (toUpsert.length > 0) {
+    try { await upsertProductCosts(toUpsert); } catch { /* non-fatal */ }
   }
 
   return NextResponse.json({

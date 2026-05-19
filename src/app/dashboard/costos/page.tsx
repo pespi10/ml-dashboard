@@ -10,6 +10,17 @@ import { LOGISTICA_PROPIA_COSTO_POR_PEDIDO } from "@/lib/shipping-config";
 
 type ParsedRow = { id: string; title: string; cost: number };
 
+type ProductCostRow = {
+  mla_id: string;
+  ean?: string | null;
+  codigo?: string | null;
+  nombre?: string | null;
+  titulo_ml?: string | null;
+  costo: number;
+  precio_lista?: number | null;
+  match_method?: string | null;
+};
+
 type EanRow = {
   ean: string;
   codigo: string;
@@ -266,23 +277,43 @@ export default function CostosPage() {
   const [shippingSaved, setShippingSaved] = useState(false);
 
   useEffect(() => {
+    // Load costs from Supabase via API
+    fetch("/api/costs")
+      .then((r) => r.ok ? r.json() as Promise<ProductCostRow[]> : [])
+      .then((rows) => {
+        const newCosts: Record<string, number> = {};
+        const newTitles: Record<string, string> = {};
+        const newSynced: Record<string, SyncedCostEntry> = {};
+        for (const row of rows) {
+          newCosts[row.mla_id] = row.costo;
+          const displayTitle = row.titulo_ml ?? row.nombre;
+          if (displayTitle) newTitles[row.mla_id] = displayTitle;
+          if (row.ean) {
+            newSynced[row.mla_id] = {
+              ean: row.ean,
+              codigo: row.codigo ?? "",
+              nombre: row.nombre ?? "",
+              titulo_ml: row.titulo_ml ?? null,
+              costo: row.costo,
+              precio_lista: row.precio_lista ?? 0,
+              match_method: (row.match_method as MatchMethod) ?? undefined,
+            };
+          }
+        }
+        setCosts(newCosts);
+        setTitles(newTitles);
+        setSyncedCosts(newSynced);
+      })
+      .catch(() => {});
+
+    // Keep shipping config in localStorage
     try {
-      console.log("localStorage keys:", Object.keys(localStorage));
-      console.log("localStorage contents:", Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)?.slice(0, 50)])));
-      const synced: Record<string, SyncedCostEntry> = JSON.parse(localStorage.getItem("ml_costs_ean") || "{}");
-      const c: Record<string, number> = JSON.parse(localStorage.getItem("ml_costs") || "{}");
-      const t: Record<string, string> = JSON.parse(localStorage.getItem("ml_costs_titles") || "{}");
-      setSyncedCosts(synced);
-      setCosts(c);
-      setTitles(t);
       const shippingConfig = JSON.parse(localStorage.getItem("shipping_config") || "null");
       if (shippingConfig?.costoPorPedido) {
         setShippingOverride(shippingConfig.costoPorPedido);
         setShippingInput(String(shippingConfig.costoPorPedido));
       }
-    } catch {
-      // localStorage unavailable or corrupt — leave state as empty
-    }
+    } catch { /* empty */ }
   }, []);
 
   const saveShippingConfig = () => {
@@ -352,7 +383,19 @@ export default function CostosPage() {
     if (file) processDirectFile(file);
   }, [processDirectFile]);
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
+    const payload = allParsed.map((r) => ({
+      mla_id: r.id,
+      nombre: r.title || null,
+      costo: r.cost,
+      precio_lista: 0,
+    }));
+    await fetch("/api/costs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
     const newCosts = { ...costs };
     const newTitles = { ...titles };
     let updated = 0; let added = 0;
@@ -361,27 +404,28 @@ export default function CostosPage() {
       newCosts[row.id] = row.cost;
       if (row.title) newTitles[row.id] = row.title;
     }
-    localStorage.setItem("ml_costs", JSON.stringify(newCosts));
-    localStorage.setItem("ml_costs_titles", JSON.stringify(newTitles));
     setCosts(newCosts); setTitles(newTitles);
     setSummary({ updated, added }); setPreview(null); setAllParsed([]);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    await fetch(`/api/costs?ml_id=${encodeURIComponent(id)}`, { method: "DELETE" });
     const newCosts = { ...costs }; const newTitles = { ...titles };
     delete newCosts[id]; delete newTitles[id];
-    localStorage.setItem("ml_costs", JSON.stringify(newCosts));
-    localStorage.setItem("ml_costs_titles", JSON.stringify(newTitles));
     setCosts(newCosts); setTitles(newTitles);
   };
 
   const startEdit = (id: string) => { setEditingId(id); setEditValue(String(costs[id])); };
-  const commitEdit = () => {
+  const commitEdit = async () => {
     if (!editingId) return;
     const val = parseFloat(editValue);
     if (!isNaN(val) && val > 0) {
+      await fetch("/api/costs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mla_id: editingId, costo: val }),
+      });
       const newCosts = { ...costs, [editingId]: val };
-      localStorage.setItem("ml_costs", JSON.stringify(newCosts));
       setCosts(newCosts);
     }
     setEditingId(null);
@@ -444,13 +488,9 @@ export default function CostosPage() {
     let totalBySku = 0;
     let totalNotFound = 0;
 
-    // Borrar explícitamente todas las keys conocidas antes de guardar
-    ['ml_costs', 'ml_costs_titles', 'ml_costs_ean', 'ml_synced_costs', 'ml_costs_synced'].forEach(k => localStorage.removeItem(k));
     setCosts({});
     setTitles({});
     setSyncedCosts({});
-    console.log("[runSync] localStorage after clear:", Object.keys(localStorage));
-    console.log("[runSync] React state reset — costs:{} titles:{} syncedCosts:{}");
 
     setSyncProgress({ status: "running", total: eanRows.length, processed: 0, matched: 0, matchedByGtin: 0, matchedBySku: 0, notFound: 0, results: [] });
 
@@ -504,11 +544,7 @@ export default function CostosPage() {
       }
     }
 
-    localStorage.setItem("ml_costs", JSON.stringify(newCosts));
-    localStorage.setItem("ml_costs_titles", JSON.stringify(newTitles));
-    localStorage.setItem("ml_costs_ean", JSON.stringify(newSynced));
     setCosts(newCosts); setTitles(newTitles); setSyncedCosts(newSynced);
-    console.log("[runSync] localStorage after save:", Object.keys(localStorage));
 
     setSyncProgress(prev => prev ? { ...prev, status: "done", processed: eanRows.length, matched: totalMatched, matchedByGtin: totalByGtin, matchedBySku: totalBySku, notFound: totalNotFound, results: allResults } : null);
     setEanPreview(null);
@@ -852,14 +888,12 @@ export default function CostosPage() {
                     </td>
                     <td style={{ padding: "10px 12px", textAlign: "right" }}>
                       <button
-                        onClick={() => {
+                        onClick={async () => {
+                          await fetch(`/api/costs?ml_id=${encodeURIComponent(mlId)}`, { method: "DELETE" });
                           const newSynced = { ...syncedCosts }; delete newSynced[mlId];
                           const newCosts = { ...costs };
                           if (newCosts[mlId] === entry.costo) delete newCosts[mlId];
                           const newTitles = { ...titles }; delete newTitles[mlId];
-                          localStorage.setItem("ml_costs_ean", JSON.stringify(newSynced));
-                          localStorage.setItem("ml_costs", JSON.stringify(newCosts));
-                          localStorage.setItem("ml_costs_titles", JSON.stringify(newTitles));
                           setSyncedCosts(newSynced); setCosts(newCosts); setTitles(newTitles);
                         }}
                         style={{ background: "transparent", border: "none", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: "13px", cursor: "pointer", padding: "4px 8px", borderRadius: "var(--radius)" }}

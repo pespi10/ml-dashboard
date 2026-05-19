@@ -208,26 +208,29 @@ export default function RentabilidadPage() {
 
   // ── Fetch ──────────────────────────────────────────────
   useEffect(() => {
+    // Load costs from Supabase via API
+    fetch("/api/costs")
+      .then((r) => r.ok ? r.json() : [])
+      .then((rows: Array<{ mla_id: string; ean?: string | null; costo: number; precio_lista?: number | null }>) => {
+        const newCosts: Record<string, number> = {};
+        const newSynced: Record<string, SyncedCostEntry> = {};
+        for (const row of rows) {
+          newCosts[row.mla_id] = row.costo;
+          if (row.ean) newSynced[row.mla_id] = { costo: row.costo, precio_lista: row.precio_lista ?? 0 };
+        }
+        setMlCosts(newCosts);
+        setMlSyncedCosts(newSynced);
+      })
+      .catch(() => {});
+
+    // Keep shipping config in localStorage
     try {
-      const stored = JSON.parse(localStorage.getItem("ml_costs") || "{}");
-      setMlCosts(stored);
-
-      // ml_costs_ean may be stored as object {mlaId: entry} or array [[mlaId, entry], ...]
-      const costsRaw = localStorage.getItem("ml_costs_ean");
-      const costsParsed = costsRaw ? JSON.parse(costsRaw) : {};
-      const synced: Record<string, SyncedCostEntry> = Array.isArray(costsParsed)
-        ? Object.fromEntries(costsParsed as [string, SyncedCostEntry][])
-        : (costsParsed as Record<string, SyncedCostEntry>);
-      setMlSyncedCosts(synced);
-
       const shippingConfig = JSON.parse(localStorage.getItem("shipping_config") || "null");
       if (shippingConfig?.costoPorPedido) {
         setShippingCostPerOrder(shippingConfig.costoPorPedido);
         setShippingCostConfirmed(true);
       }
-      console.log("[rentabilidad] ml_costs_ean entries (first 3):", Object.entries(synced).slice(0, 3));
-      console.log("[rentabilidad] ml_costs entries (first 3):", Object.entries(stored).slice(0, 3));
-    } catch { /* empty localStorage is fine */ }
+    } catch { /* empty */ }
 
     // Non-blocking shipping fetch — fills in after main data loads
     fetch("/api/shipping")
