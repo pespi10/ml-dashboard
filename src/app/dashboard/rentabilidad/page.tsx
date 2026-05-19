@@ -69,6 +69,12 @@ interface EnrichedItem extends ProfitItem {
   realMargin: number | null;
   precioLista: number | null;
   avgMlPrice: number | null;
+  unitShippingEst: number;
+  totalShippingEst: number;
+  unitTaxEst: number;
+  totalTaxEst: number;
+  fullNetProfit: number | null;
+  fullMargin: number | null;
 }
 
 interface CategoryRow {
@@ -96,7 +102,11 @@ type SortCol =
   | "avgMlPrice"
   | "unitSaleFee"
   | "unitCost"
-  | "unitProfit";
+  | "unitProfit"
+  | "unitShippingEst"
+  | "unitTaxEst"
+  | "fullNetProfit"
+  | "fullMargin";
 
 // ── Calculator types ───────────────────────────────────────────────────
 
@@ -241,21 +251,42 @@ export default function RentabilidadPage() {
   // ── Enriched items ─────────────────────────────────────
   const enrichedItems = useMemo<EnrichedItem[]>(() => {
     if (!data) return [];
+    const propiaRatio = shippingData?.splitRatio.propia ?? 0;
+    const taxRate = taxData?.combinedRate ?? 0;
     return (data.profitabilityByItem ?? []).map((item) => {
       const synced = mlSyncedCosts[item.itemId];
       const unitCost = synced?.costo ?? mlCosts[item.itemId] ?? null;
       const totalCost = unitCost !== null ? unitCost * item.unitsSold : null;
-      const realNetProfit =
-        totalCost !== null ? item.grossRevenue - item.totalSaleFees - totalCost : null;
-      const realMargin =
-        realNetProfit !== null && item.grossRevenue > 0
-          ? (realNetProfit / item.grossRevenue) * 100
-          : null;
-      const precioLista = synced?.precio_lista ?? null;
       const avgMlPrice = item.unitsSold > 0 ? item.grossRevenue / item.unitsSold : null;
-      return { ...item, unitCost, totalCost, realNetProfit, realMargin, precioLista, avgMlPrice };
+      const precioLista = synced?.precio_lista ?? null;
+
+      // Shipping estimate (logística propia only)
+      const propiaUnits = Math.round(item.unitsSold * propiaRatio / 100);
+      const totalShippingEst = propiaUnits * shippingCostPerOrder;
+      const unitShippingEst = item.unitsSold > 0 ? totalShippingEst / item.unitsSold : 0;
+
+      // Tax estimate (IIBB on gross revenue)
+      const totalTaxEst = item.grossRevenue * taxRate / 100;
+      const unitTaxEst = avgMlPrice !== null ? avgMlPrice * taxRate / 100 : 0;
+
+      // Profit before shipping/tax (existing logic)
+      const realNetProfit = totalCost !== null
+        ? item.grossRevenue - item.totalSaleFees - totalCost : null;
+      const realMargin = realNetProfit !== null && item.grossRevenue > 0
+        ? (realNetProfit / item.grossRevenue) * 100 : null;
+
+      // Full profit including shipping + tax estimates
+      const fullNetProfit = realNetProfit !== null
+        ? realNetProfit - totalShippingEst - totalTaxEst : null;
+      const fullMargin = fullNetProfit !== null && item.grossRevenue > 0
+        ? (fullNetProfit / item.grossRevenue) * 100 : null;
+
+      return {
+        ...item, unitCost, totalCost, realNetProfit, realMargin, precioLista, avgMlPrice,
+        unitShippingEst, totalShippingEst, unitTaxEst, totalTaxEst, fullNetProfit, fullMargin,
+      };
     });
-  }, [data, mlCosts, mlSyncedCosts]);
+  }, [data, mlCosts, mlSyncedCosts, shippingData, taxData, shippingCostPerOrder]);
 
   // ── Sorted items ───────────────────────────────────────
   const sortedItems = useMemo(() => {
@@ -271,14 +302,20 @@ export default function RentabilidadPage() {
           if (a.totalCost === null && b.totalCost === null) return 0;
           if (a.totalCost === null) return 1; if (b.totalCost === null) return -1;
           return dir * (a.totalCost - b.totalCost);
-        case "realNetProfit":
-          if (a.realNetProfit === null && b.realNetProfit === null) return 0;
-          if (a.realNetProfit === null) return 1; if (b.realNetProfit === null) return -1;
-          return dir * (a.realNetProfit - b.realNetProfit);
-        case "realMargin":
-          if (a.realMargin === null && b.realMargin === null) return 0;
-          if (a.realMargin === null) return 1; if (b.realMargin === null) return -1;
-          return dir * (a.realMargin - b.realMargin);
+        case "realNetProfit": {
+          const av = a.fullNetProfit ?? a.realNetProfit;
+          const bv = b.fullNetProfit ?? b.realNetProfit;
+          if (av === null && bv === null) return 0;
+          if (av === null) return 1; if (bv === null) return -1;
+          return dir * (av - bv);
+        }
+        case "realMargin": {
+          const av = a.fullMargin ?? a.realMargin;
+          const bv = b.fullMargin ?? b.realMargin;
+          if (av === null && bv === null) return 0;
+          if (av === null) return 1; if (bv === null) return -1;
+          return dir * (av - bv);
+        }
         case "precioLista":
           if (a.precioLista === null && b.precioLista === null) return 0;
           if (a.precioLista === null) return 1; if (b.precioLista === null) return -1;
@@ -297,8 +334,25 @@ export default function RentabilidadPage() {
           if (a.unitCost === null) return 1; if (b.unitCost === null) return -1;
           return dir * (a.unitCost - b.unitCost);
         case "unitProfit": {
-          const av = a.realNetProfit !== null && a.unitsSold > 0 ? a.realNetProfit / a.unitsSold : null;
-          const bv = b.realNetProfit !== null && b.unitsSold > 0 ? b.realNetProfit / b.unitsSold : null;
+          const fp = (x: EnrichedItem) => (x.fullNetProfit ?? x.realNetProfit);
+          const av = fp(a) !== null && a.unitsSold > 0 ? fp(a)! / a.unitsSold : null;
+          const bv = fp(b) !== null && b.unitsSold > 0 ? fp(b)! / b.unitsSold : null;
+          if (av === null && bv === null) return 0;
+          if (av === null) return 1; if (bv === null) return -1;
+          return dir * (av - bv);
+        }
+        case "unitShippingEst":
+          return dir * (a.unitShippingEst - b.unitShippingEst);
+        case "unitTaxEst":
+          return dir * (a.unitTaxEst - b.unitTaxEst);
+        case "fullNetProfit": {
+          const av = a.fullNetProfit; const bv = b.fullNetProfit;
+          if (av === null && bv === null) return 0;
+          if (av === null) return 1; if (bv === null) return -1;
+          return dir * (av - bv);
+        }
+        case "fullMargin": {
+          const av = a.fullMargin; const bv = b.fullMargin;
           if (av === null && bv === null) return 0;
           if (av === null) return 1; if (bv === null) return -1;
           return dir * (av - bv);
@@ -505,57 +559,51 @@ export default function RentabilidadPage() {
                 <thead>
                   {tableView === "unit" ? (
                     <tr>
-                      <SortHeader label="Producto"      col="title"        sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                      <SortHeader label="Categoría"     col="categoryName" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                      <SortHeader label="P. ML"         col="avgMlPrice"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Comisión u."   col="unitSaleFee"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Costo u."      col="unitCost"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Ganancia u."   col="unitProfit"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Margen"        col="realMargin"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Producto"     col="title"           sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                      <SortHeader label="Categoría"    col="categoryName"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                      <SortHeader label="P. ML"        col="avgMlPrice"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Comisión u."  col="unitSaleFee"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Envío u."     col="unitShippingEst" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Imp. u."      col="unitTaxEst"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Costo u."     col="unitCost"        sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Ganancia u."  col="unitProfit"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Margen"       col="realMargin"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                     </tr>
                   ) : (
                     <tr>
-                      <SortHeader label="Producto"      col="title"         sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                      <SortHeader label="Categoría"     col="categoryName"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                      <SortHeader label="Uds."          col="unitsSold"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Revenue"       col="grossRevenue"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Comisión"      col="totalSaleFees" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Costo total"   col="totalCost"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Ganancia"      col="realNetProfit" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Margen"        col="realMargin"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Producto"     col="title"           sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                      <SortHeader label="Categoría"    col="categoryName"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                      <SortHeader label="Uds."         col="unitsSold"       sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Revenue"      col="grossRevenue"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Comisión"     col="totalSaleFees"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Envío"        col="unitShippingEst" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Imp."         col="unitTaxEst"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Costo total"  col="totalCost"       sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Ganancia"     col="realNetProfit"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Margen"       col="realMargin"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                     </tr>
                   )}
                 </thead>
                 <tbody>
                   {loading ? (
-                    <SkeletonRows colSpan={tableView === "unit" ? 7 : 8} />
+                    <SkeletonRows colSpan={tableView === "unit" ? 9 : 10} />
                   ) : tableView === "unit" ? (
                     sortedItems.map((item) => {
                       const unitSaleFee = item.unitsSold > 0 ? item.totalSaleFees / item.unitsSold : 0;
-                      const unitProfit = item.realNetProfit !== null && item.unitsSold > 0
-                        ? item.realNetProfit / item.unitsSold : null;
-                      const commUnitPct = item.avgMlPrice && item.avgMlPrice > 0
-                        ? (unitSaleFee / item.avgMlPrice) * 100 : 0;
-
+                      const commUnitPct = item.avgMlPrice && item.avgMlPrice > 0 ? (unitSaleFee / item.avgMlPrice) * 100 : 0;
+                      const fullUnitProfit = item.fullNetProfit !== null && item.unitsSold > 0
+                        ? item.fullNetProfit / item.unitsSold : null;
+                      const trStyle: React.CSSProperties = { borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" };
                       return (
-                        <tr
-                          key={item.itemId}
-                          onClick={() => setSelectedItem(item)}
-                          style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" }}
+                        <tr key={item.itemId} onClick={() => setSelectedItem(item)} style={trStyle}
                           onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
                           onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                         >
                           <td style={{ ...tdMono, maxWidth: "200px" }}>
-                            <p style={{ fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {item.title}
-                            </p>
-                            <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>
-                              {item.itemId}
-                            </p>
+                            <p style={{ fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</p>
+                            <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>{item.itemId}</p>
                           </td>
-                          <td style={{ ...tdMono, maxWidth: "120px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {item.categoryName}
-                          </td>
+                          <td style={{ ...tdMono, maxWidth: "120px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.categoryName}</td>
                           <td style={{ ...tdMono, textAlign: "right" }}>
                             {item.avgMlPrice !== null ? formatARS(item.avgMlPrice) : <span style={{ color: "var(--text-dim)" }}>—</span>}
                           </td>
@@ -563,14 +611,24 @@ export default function RentabilidadPage() {
                             <span style={{ color: "var(--red)" }}>-{formatARS(unitSaleFee)}</span>
                             <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>{commUnitPct.toFixed(1)}%</span>
                           </td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>
+                            {item.unitShippingEst > 0
+                              ? <span style={{ color: "var(--red)" }}>-{formatARS(item.unitShippingEst)}</span>
+                              : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>
+                            {item.unitTaxEst > 0
+                              ? <span style={{ color: "var(--red)" }}>-{formatARS(item.unitTaxEst)}</span>
+                              : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                          </td>
                           <td style={{ ...tdMono, textAlign: "right", color: item.unitCost !== null ? "var(--text)" : "var(--text-dim)" }}>
                             {item.unitCost !== null ? `-${formatARS(item.unitCost)}` : "—"}
                           </td>
-                          <td style={{ ...tdMono, textAlign: "right", fontWeight: "600", color: unitProfit === null ? "var(--text-dim)" : unitProfit >= 0 ? "var(--green)" : "var(--red)" }}>
-                            {unitProfit !== null ? formatARS(unitProfit) : "—"}
+                          <td style={{ ...tdMono, textAlign: "right", fontWeight: "600", color: fullUnitProfit === null ? "var(--text-dim)" : fullUnitProfit >= 0 ? "var(--green)" : "var(--red)" }}>
+                            {fullUnitProfit !== null ? formatARS(fullUnitProfit) : "—"}
                           </td>
                           <td style={{ ...tdMono, textAlign: "right" }}>
-                            <MarginText margin={item.realMargin} />
+                            <MarginText margin={item.fullMargin ?? item.realMargin} />
                           </td>
                         </tr>
                       );
@@ -578,44 +636,41 @@ export default function RentabilidadPage() {
                   ) : (
                     sortedItems.map((item) => {
                       const commPct = item.grossRevenue > 0 ? (item.totalSaleFees / item.grossRevenue) * 100 : 0;
-
+                      const trStyle: React.CSSProperties = { borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" };
                       return (
-                        <tr
-                          key={item.itemId}
-                          onClick={() => setSelectedItem(item)}
-                          style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" }}
+                        <tr key={item.itemId} onClick={() => setSelectedItem(item)} style={trStyle}
                           onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
                           onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                         >
                           <td style={{ ...tdMono, maxWidth: "200px" }}>
-                            <p style={{ fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {item.title}
-                            </p>
-                            <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>
-                              {item.itemId}
-                            </p>
+                            <p style={{ fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</p>
+                            <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>{item.itemId}</p>
                           </td>
-                          <td style={{ ...tdMono, maxWidth: "120px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {item.categoryName}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right", color: "var(--text-muted)" }}>
-                            {item.unitsSold}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>
-                            {formatARS(item.grossRevenue)}
-                          </td>
+                          <td style={{ ...tdMono, maxWidth: "120px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.categoryName}</td>
+                          <td style={{ ...tdMono, textAlign: "right", color: "var(--text-muted)" }}>{item.unitsSold}</td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>{formatARS(item.grossRevenue)}</td>
                           <td style={{ ...tdMono, textAlign: "right" }}>
                             <span style={{ color: "var(--red)" }}>-{formatARS(item.totalSaleFees)}</span>
                             <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>{commPct.toFixed(1)}%</span>
                           </td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>
+                            {item.totalShippingEst > 0
+                              ? <span style={{ color: "var(--red)" }}>-{formatARS(item.totalShippingEst)}</span>
+                              : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                          </td>
+                          <td style={{ ...tdMono, textAlign: "right" }}>
+                            {item.totalTaxEst > 0
+                              ? <span style={{ color: "var(--red)" }}>-{formatARS(item.totalTaxEst)}</span>
+                              : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                          </td>
                           <td style={{ ...tdMono, textAlign: "right", color: item.totalCost !== null ? "var(--text)" : "var(--text-dim)" }}>
                             {item.totalCost !== null ? `-${formatARS(item.totalCost)}` : "—"}
                           </td>
-                          <td style={{ ...tdMono, textAlign: "right", fontWeight: "600", color: item.realNetProfit === null ? "var(--text-dim)" : item.realNetProfit >= 0 ? "var(--green)" : "var(--red)" }}>
-                            {item.realNetProfit !== null ? formatARS(item.realNetProfit) : "—"}
+                          <td style={{ ...tdMono, textAlign: "right", fontWeight: "600", color: (item.fullNetProfit ?? item.realNetProfit) === null ? "var(--text-dim)" : (item.fullNetProfit ?? item.realNetProfit)! >= 0 ? "var(--green)" : "var(--red)" }}>
+                            {(item.fullNetProfit ?? item.realNetProfit) !== null ? formatARS((item.fullNetProfit ?? item.realNetProfit)!) : "—"}
                           </td>
                           <td style={{ ...tdMono, textAlign: "right" }}>
-                            <MarginText margin={item.realMargin} />
+                            <MarginText margin={item.fullMargin ?? item.realMargin} />
                           </td>
                         </tr>
                       );
@@ -952,6 +1007,12 @@ export default function RentabilidadPage() {
                     ...(selectedItem.totalCost !== null
                       ? [{ label: `Costo total (${selectedItem.unitsSold} u.)`, value: selectedItem.totalCost, color: "var(--red)", sign: "-" }]
                       : []),
+                    ...(selectedItem.totalShippingEst > 0
+                      ? [{ label: `Envío (~${shippingData?.splitRatio.propia.toFixed(0) ?? "?"}% logística propia)`, value: selectedItem.totalShippingEst, color: "var(--red)", sign: "-" }]
+                      : []),
+                    ...(selectedItem.totalTaxEst > 0
+                      ? [{ label: `IIBB (~${taxData?.combinedRate.toFixed(2) ?? "?"}%)`, value: selectedItem.totalTaxEst, color: "var(--red)", sign: "-" }]
+                      : []),
                   ].map(({ label, value, color, sign }) => (
                     <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <span style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{label}</span>
@@ -962,13 +1023,17 @@ export default function RentabilidadPage() {
                   ))}
 
                   <div style={{ borderTop: "1px solid var(--border)", paddingTop: "10px", display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: "13px", fontFamily: "var(--font-display)", fontWeight: "700" }}>Ganancia antes de imp.</span>
+                    <span style={{ fontSize: "13px", fontFamily: "var(--font-display)", fontWeight: "700" }}>
+                      {selectedItem.fullNetProfit !== null ? "Ganancia neta" : "Ganancia antes de imp."}
+                    </span>
                     <span style={{
                       fontFamily: "var(--font-mono)", fontSize: "14px", fontWeight: "700",
-                      color: selectedItem.realNetProfit === null ? "var(--text-dim)"
-                        : selectedItem.realNetProfit >= 0 ? "var(--green)" : "var(--red)",
+                      color: (selectedItem.fullNetProfit ?? selectedItem.realNetProfit) === null ? "var(--text-dim)"
+                        : (selectedItem.fullNetProfit ?? selectedItem.realNetProfit)! >= 0 ? "var(--green)" : "var(--red)",
                     }}>
-                      {selectedItem.realNetProfit !== null ? formatARS(selectedItem.realNetProfit) : "—"}
+                      {(selectedItem.fullNetProfit ?? selectedItem.realNetProfit) !== null
+                        ? formatARS((selectedItem.fullNetProfit ?? selectedItem.realNetProfit)!)
+                        : "—"}
                     </span>
                   </div>
                 </div>
@@ -989,7 +1054,7 @@ export default function RentabilidadPage() {
                     </span>
                   )}
                 </p>
-                {taxData ? (
+                {taxData && taxData.combinedRate > 0 ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                     {/* IIBB ventas */}
                     {taxData.iibbVentas.detail.length > 0 && (
@@ -1044,55 +1109,52 @@ export default function RentabilidadPage() {
                   </div>
                 ) : (
                   <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.6" }}>
-                    Los impuestos (IVA, IBB) son liquidados por ML en el estado de cuenta mensual y no están disponibles por orden individual.
+                    IIBB: datos del período actual en proceso. Referencia {taxMonthName}: ver billing.
                   </p>
                 )}
               </div>
 
               {/* Shipping estimate */}
-              {shippingData && (
-                <div style={{
-                  padding: "16px", background: "var(--surface-2)",
-                  border: "1px solid var(--border)", borderRadius: "var(--radius)",
-                }}>
-                  <p style={{ ...labelStyle, marginBottom: "12px" }}>
-                    Envío estimado
-                    {!shippingCostConfirmed && (
-                      <span style={{ color: "#ff8c00", fontWeight: "400", marginLeft: "6px", textTransform: "none" }}>
-                        ⚠ costo pendiente confirmar
+              <div style={{
+                padding: "16px", background: "var(--surface-2)",
+                border: "1px solid var(--border)", borderRadius: "var(--radius)",
+              }}>
+                <p style={{ ...labelStyle, marginBottom: "12px" }}>
+                  Envío estimado
+                  {shippingData && !shippingCostConfirmed && (
+                    <span style={{ color: "#ff8c00", fontWeight: "400", marginLeft: "6px", textTransform: "none" }}>
+                      ⚠ costo pendiente confirmar
+                    </span>
+                  )}
+                </p>
+                {shippingData ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                        Logística propia (~{shippingData.splitRatio.propia.toFixed(0)}%)
                       </span>
-                    )}
+                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: selectedItem.unitShippingEst > 0 ? "var(--red)" : "var(--text-dim)" }}>
+                        {selectedItem.unitShippingEst > 0 ? `-${formatARS(selectedItem.unitShippingEst)} /u.` : "—"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                        Mercado Envíos (~{shippingData.splitRatio.ml.toFixed(0)}%)
+                      </span>
+                      <span style={{ fontSize: "11px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+                        ver billing
+                      </span>
+                    </div>
+                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "2px", lineHeight: "1.5" }}>
+                      Split basado en {shippingData.analyzedShipments} envíos recientes. Costo logística propia: {formatARS(shippingCostPerOrder)}/pedido.
+                    </p>
+                  </div>
+                ) : (
+                  <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.6" }}>
+                    Envío: datos no disponibles.
                   </p>
-                  {(() => {
-                    const propiaUnits = Math.round(selectedItem.unitsSold * (shippingData.splitRatio.propia / 100));
-                    const mlUnits = selectedItem.unitsSold - propiaUnits;
-                    const propiaShippingCost = propiaUnits * shippingCostPerOrder;
-                    return (
-                      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                            Logística propia ({shippingData.splitRatio.propia.toFixed(0)}% · {propiaUnits} u.)
-                          </span>
-                          <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: propiaShippingCost > 0 ? "var(--red)" : "var(--text-dim)" }}>
-                            {propiaShippingCost > 0 ? `-${formatARS(propiaShippingCost)}` : "—"}
-                          </span>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                            Mercado Envíos ({shippingData.splitRatio.ml.toFixed(0)}% · {mlUnits} u.)
-                          </span>
-                          <span style={{ fontSize: "11px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
-                            ver billing
-                          </span>
-                        </div>
-                        <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "2px", lineHeight: "1.5" }}>
-                          Split basado en {shippingData.analyzedShipments} envíos recientes. Costo logística propia: {formatARS(shippingCostPerOrder)}/pedido.
-                        </p>
-                      </div>
-                    );
-                  })()}
-                </div>
-              )}
+                )}
+              </div>
 
               {/* Unit info */}
               {selectedItem.unitCost !== null && (
