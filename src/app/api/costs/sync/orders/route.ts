@@ -28,6 +28,7 @@ async function mlGet<T>(path: string, accessToken: string): Promise<T> {
 
 export async function POST() {
   const tokens = getSession();
+  console.log("[sync/orders] tokens:", tokens ? `OK user=${tokens.user_id}` : "NULL");
   if (!tokens) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   // 1. Build seller_sku → { ml_id, title } from last 1000 orders (desc)
@@ -36,16 +37,22 @@ export async function POST() {
   let pages = 0;
 
   while (pages < MAX_PAGES) {
+    const url = `/orders/search?seller=${tokens.user_id}&limit=${ORDER_LIMIT}&offset=${offset}&sort=date_desc`;
     let search: OrdersSearchResult;
     try {
-      search = await mlGet<OrdersSearchResult>(
-        `/orders/search?seller=${tokens.user_id}&limit=${ORDER_LIMIT}&offset=${offset}&sort=date_desc`,
-        tokens.access_token
+      search = await mlGet<OrdersSearchResult>(url, tokens.access_token);
+    } catch (err) {
+      console.error("[sync/orders] fetch failed on page", pages, "url:", url, "error:", String(err));
+      return NextResponse.json(
+        { error: "Failed to fetch orders", detail: String(err), page: pages, url },
+        { status: 502 }
       );
-    } catch {
-      break;
     }
     const orders = search.results ?? [];
+    console.log("[sync/orders] page", pages, "orders fetched:", orders.length, "total:", search.paging?.total);
+    if (orders.length > 0) {
+      console.log("[sync/orders] sample order seller_sku:", orders[0]?.order_items?.[0]?.item?.seller_sku);
+    }
     for (const order of orders) {
       for (const oi of order.order_items ?? []) {
         const { id, seller_sku, title } = oi.item;
@@ -60,6 +67,9 @@ export async function POST() {
   }
 
   console.log("[sync/orders] orderMap size:", orderMap.size, "orders scanned:", offset);
+  if (orderMap.size > 0) {
+    console.log("[sync/orders] sample orderMap entries:", Array.from(orderMap.entries()).slice(0, 3));
+  }
 
   // 2. Read existing costs from Supabase
   const { data: costs, error } = await supabaseAdmin
@@ -67,7 +77,14 @@ export async function POST() {
     .select("ml_id, ean, codigo, nombre, titulo_ml, costo, precio_lista");
 
   if (error) {
+    console.error("[sync/orders] Supabase error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const dbCosts = costs ?? [];
+  console.log("[sync/orders] costs in DB:", dbCosts.length);
+  if (dbCosts.length > 0) {
+    console.log("[sync/orders] sample cost ean:", dbCosts[0]?.ean, "ml_id:", dbCosts[0]?.ml_id);
   }
 
   // 3. Cross-reference costs with order map
@@ -87,7 +104,7 @@ export async function POST() {
   let confirmed = 0;
   let newMatches = 0;
 
-  for (const cost of costs ?? []) {
+  for (const cost of dbCosts) {
     const eanClean = cost.ean?.replace(/\D/g, "") ?? "";
     const match =
       (eanClean ? orderMap.get(eanClean) : null) ??
@@ -97,7 +114,6 @@ export async function POST() {
 
     if (match.id === cost.ml_id) {
       confirmed++;
-      // Update titulo_ml if it changed
       if (match.title !== cost.titulo_ml) {
         toUpsert.push({
           ml_id: cost.ml_id,
@@ -111,7 +127,6 @@ export async function POST() {
         });
       }
     } else {
-      // Order gives a different (more reliable) ml_id — replace
       toDelete.push(cost.ml_id);
       toUpsert.push({
         ml_id: match.id,
