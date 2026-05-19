@@ -82,7 +82,11 @@ export async function GET() {
     accessToken
   );
 
+  console.log("[billing/taxes] raw response keys:", "_error" in raw ? "ERROR" : Object.keys(raw as object));
+  console.log("[billing/taxes] raw response:", JSON.stringify(raw).slice(0, 500));
+
   let summary = !("_error" in raw) ? extractSummary(raw as MLPerceptionsResponse) : [];
+  console.log("[billing/taxes] extracted summary length:", summary.length, "| first item:", JSON.stringify(summary[0] ?? null));
 
   if ("_error" in raw || summary.length === 0) {
     const fallbackPeriod = monthKey(2);
@@ -91,8 +95,10 @@ export async function GET() {
       `/billing/integration/periods/key/${fallbackPeriod}/perceptions/summary?group=ML`,
       accessToken
     );
+    console.log("[billing/taxes] fallback raw:", JSON.stringify(fallbackRaw).slice(0, 500));
     if (!("_error" in fallbackRaw)) {
       const fallbackList = extractSummary(fallbackRaw as MLPerceptionsResponse);
+      console.log("[billing/taxes] fallback summary length:", fallbackList.length);
       if (fallbackList.length > 0) {
         period = fallbackPeriod;
         raw = fallbackRaw;
@@ -103,7 +109,15 @@ export async function GET() {
 
   console.log("[billing/taxes] using period:", period, "| perceptions count:", summary.length);
 
-  if ("_error" in raw && summary.length === 0) {
+  if (summary.length === 0) {
+    return NextResponse.json({
+      error: "perceptions.summary empty for both periods",
+      triedPeriods: [monthKey(1), monthKey(2)],
+      rawSample: JSON.stringify(raw).slice(0, 300),
+    }, { status: 422 });
+  }
+
+  if ("_error" in raw) {
     return NextResponse.json({ error: (raw as { _error: string })._error }, { status: 502 });
   }
 
