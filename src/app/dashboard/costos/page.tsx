@@ -51,9 +51,9 @@ type SyncProgress = {
 
 type OrderSyncResult = {
   orders_scanned: number;
-  order_skus_found: number;
-  confirmed: number;
-  newMatches: number;
+  skus_found: number;
+  already_matched: number;
+  new_matches: number;
 };
 
 export type SyncedCostEntry = {
@@ -965,15 +965,15 @@ export default function CostosPage() {
               <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>órdenes analizadas</p>
             </div>
             <div style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "10px 18px", textAlign: "center" }}>
-              <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: "var(--yellow)" }}>{orderSyncResult.order_skus_found}</p>
+              <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: "var(--yellow)" }}>{orderSyncResult.skus_found}</p>
               <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>SKUs únicos en órdenes</p>
             </div>
             <div style={{ background: "var(--green-dim)", border: "1px solid rgba(0,212,160,0.2)", borderRadius: "var(--radius)", padding: "10px 18px", textAlign: "center" }}>
-              <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: "var(--green)" }}>{orderSyncResult.confirmed}</p>
-              <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>confirmados</p>
+              <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: "var(--green)" }}>{orderSyncResult.already_matched}</p>
+              <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>ya matcheados</p>
             </div>
-            <div style={{ background: orderSyncResult.newMatches > 0 ? "var(--green-dim)" : "var(--surface-2)", border: `1px solid ${orderSyncResult.newMatches > 0 ? "rgba(0,212,160,0.2)" : "var(--border)"}`, borderRadius: "var(--radius)", padding: "10px 18px", textAlign: "center" }}>
-              <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: orderSyncResult.newMatches > 0 ? "var(--green)" : "var(--text-dim)" }}>{orderSyncResult.newMatches}</p>
+            <div style={{ background: orderSyncResult.new_matches > 0 ? "var(--green-dim)" : "var(--surface-2)", border: `1px solid ${orderSyncResult.new_matches > 0 ? "rgba(0,212,160,0.2)" : "var(--border)"}`, borderRadius: "var(--radius)", padding: "10px 18px", textAlign: "center" }}>
+              <p style={{ fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800", color: orderSyncResult.new_matches > 0 ? "var(--green)" : "var(--text-dim)" }}>{orderSyncResult.new_matches}</p>
               <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>nuevos matches</p>
             </div>
           </div>
