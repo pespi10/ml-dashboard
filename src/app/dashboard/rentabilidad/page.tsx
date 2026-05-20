@@ -7,7 +7,31 @@ import {
   ResponsiveContainer, Cell,
 } from "recharts";
 import { formatARS } from "@/lib/ml-api";
-import { LOGISTICA_PROPIA_COSTO_POR_PEDIDO } from "@/lib/shipping-config";
+import type { MLItem } from "@/lib/ml-api";
+
+// ── Commission rates ───────────────────────────────────────────────────
+const ML_COMMISSION: Record<string, number> = {
+  gold_special: 0.125,
+  gold_pro: 0.09,
+  gold_premium: 0.16,
+  silver: 0.08,
+  bronze: 0.06,
+  free: 0,
+};
+
+const STATUS_COLOR: Record<string, string> = {
+  active: "var(--green)",
+  paused: "var(--yellow)",
+  closed: "var(--text-dim)",
+  under_review: "#60a5fa",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  active: "Activa",
+  paused: "Pausada",
+  closed: "Cerrada",
+  under_review: "En revisión",
+};
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -19,18 +43,10 @@ interface ProfitItem {
   unitsSold: number;
   grossRevenue: number;
   totalSaleFees: number;
-  shippingCost: number;
-  netRevenue: number;
-  margin: number;
 }
 
 interface DashboardData {
   profitabilityByItem: ProfitItem[];
-}
-
-interface SyncedCostEntry {
-  costo: number;
-  precio_lista: number;
 }
 
 interface TaxData {
@@ -38,40 +54,51 @@ interface TaxData {
   ventasRate: number;
   enviosRate: number;
   combinedRate: number;
-  iibbVentas: { total: number; rate: number; count: number };
-  iibbEnvios: { total: number; rate: number; count: number };
+  iibbVentas: { total: number; taxable: number; rate: number; count: number };
+  iibbEnvios: { total: number; taxable: number; rate: number; count: number };
 }
 
 interface ShippingData {
-  totalOrders: number;
-  analyzedShipments: number;
-  avgMLShippingCost: number;
   avgSellerCost: number;
   avgOrderRevenue: number;
   mlShippingRate: number;
   propiaShippingRate: number;
   pctSellerPays: number;
-  pctBuyerPays: number;
-  pctShared: number;
   totalAnalyzed: number;
-  logisticaPropia: { count: number; pct?: number; avgCost?: number };
-  mercadoEnvios: { count: number; pct?: number; avgCost: number; sellerPaidCount?: number; buyerPaidCount?: number };
   splitRatio: { propia: number; ml: number };
 }
 
-interface EnrichedItem extends ProfitItem {
+interface EnrichedItem {
+  // From MLItem
+  id: string;
+  title: string;
+  price: number;
+  listing_type_id: string;
+  available_quantity: number;
+  sold_quantity: number;
+  status: string;
+  permalink: string;
+  // Category (from profit data, blank if no sales)
+  categoryId: string;
+  categoryName: string;
+  // Sales data (0 if no sales in period)
+  unitsSold: number;
+  grossRevenue: number;
+  totalSaleFees: number;
+  // Cost from DB
   unitCost: number | null;
-  totalCost: number | null;
-  realNetProfit: number | null;
-  realMargin: number | null;
   precioLista: number | null;
-  avgMlPrice: number | null;
-  unitShippingEst: number;
-  totalShippingEst: number;
-  unitTaxEst: number;
-  totalTaxEst: number;
-  fullNetProfit: number | null;
-  fullMargin: number | null;
+  // Per-unit calculations (based on item.price)
+  commRate: number;
+  commAmt: number;
+  shippingRate: number;   // weighted %
+  shippingAmt: number;    // $ based on current price
+  iibbRate: number;       // % (e.g. 4.0)
+  iibbAmt: number;        // $ based on current price
+  // Profit
+  unitProfit: number | null;
+  unitMargin: number | null;
+  totalProfit: number | null; // unitProfit × unitsSold, null if no cost or no sales
 }
 
 interface CategoryRow {
@@ -88,22 +115,16 @@ interface CategoryRow {
 
 type SortCol =
   | "title"
-  | "categoryName"
-  | "unitsSold"
-  | "grossRevenue"
-  | "totalSaleFees"
-  | "totalCost"
-  | "realNetProfit"
-  | "realMargin"
-  | "precioLista"
-  | "avgMlPrice"
-  | "unitSaleFee"
+  | "price"
+  | "commAmt"
+  | "shippingAmt"
+  | "iibbAmt"
   | "unitCost"
   | "unitProfit"
-  | "unitShippingEst"
-  | "unitTaxEst"
-  | "fullNetProfit"
-  | "fullMargin";
+  | "unitMargin"
+  | "unitsSold"
+  | "grossRevenue"
+  | "totalProfit";
 
 // ── Calculator types ───────────────────────────────────────────────────
 
@@ -183,23 +204,17 @@ function marginColor(m: number | null): string {
 
 export default function RentabilidadPage() {
   // ── Data state ─────────────────────────────────────────
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [fetchError, setFetchError] = useState<string | null>(null);
-  const [mlCosts, setMlCosts] = useState<Record<string, number>>({});
-  const [mlSyncedCosts, setMlSyncedCosts] = useState<Record<string, SyncedCostEntry>>({});
+  const [activeItems, setActiveItems] = useState<MLItem[]>([]);
+  const [profitMap, setProfitMap] = useState<Record<string, ProfitItem>>({});
+  const [costs, setCosts] = useState<Record<string, { costo: number; precioLista: number | null }>>({});
   const [taxData, setTaxData] = useState<TaxData | null>(null);
   const [shippingData, setShippingData] = useState<ShippingData | null>(null);
-  const [shippingCostPerOrder, setShippingCostPerOrder] = useState(LOGISTICA_PROPIA_COSTO_POR_PEDIDO);
-  const [shippingCostConfirmed, setShippingCostConfirmed] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // ── Detail drawer state ────────────────────────────────
+  // ── UI state ───────────────────────────────────────────
   const [selectedItem, setSelectedItem] = useState<EnrichedItem | null>(null);
-
-  // ── Table view toggle ──────────────────────────────────
   const [tableView, setTableView] = useState<"unit" | "totals">("unit");
-
-  // ── Sort state ─────────────────────────────────────────
   const [sortCol, setSortCol] = useState<SortCol>("unitProfit");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
@@ -211,200 +226,155 @@ export default function RentabilidadPage() {
 
   // ── Fetch ──────────────────────────────────────────────
   useEffect(() => {
-    // Keep shipping config in localStorage
-    try {
-      const shippingConfig = JSON.parse(localStorage.getItem("shipping_config") || "null");
-      if (shippingConfig?.costoPorPedido) {
-        setShippingCostPerOrder(shippingConfig.costoPorPedido);
-        setShippingCostConfirmed(true);
-      }
-    } catch { /* empty */ }
-
-    // Non-blocking shipping fetch — fills in after main data loads
+    // Non-blocking shipping
     fetch("/api/shipping")
-      .then((r) => r.ok ? r.json() as Promise<ShippingData> : null)
-      .then((d) => { if (d && !("error" in (d as object))) setShippingData(d); })
+      .then(r => r.ok ? r.json() as Promise<ShippingData> : null)
+      .then(d => { if (d && !("error" in (d as object))) setShippingData(d); })
       .catch(() => {});
 
+    const productsFetch = fetch("/api/products")
+      .then(r => r.json())
+      .then(d => (d.active as MLItem[]) ?? []);
+
     const profitFetch = fetch("/api/dashboard?section=profitability")
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<DashboardData>; });
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<DashboardData>; });
 
     const taxFetch = fetch("/api/billing/taxes")
-      .then((r) => r.ok ? r.json() as Promise<TaxData> : null)
+      .then(r => r.ok ? r.json() as Promise<TaxData> : null)
       .catch(() => null);
 
-    type CostRow = { ml_id: string; ean?: string | null; costo: number; precio_lista?: number | null };
     const costsFetch = fetch("/api/costs")
-      .then((r) => r.ok ? r.json() as Promise<CostRow[]> : [])
-      .catch((): CostRow[] => []);
+      .then(r => r.ok ? r.json() : [])
+      .catch(() => []) as Promise<Array<{ ml_id: string; costo: number; precio_lista?: number | null }>>;
 
-    Promise.all([profitFetch, taxFetch, costsFetch])
-      .then(([profitData, taxes, dbCosts]) => {
-        const profitItems = profitData.profitabilityByItem ?? [];
+    Promise.all([productsFetch, profitFetch, taxFetch, costsFetch])
+      .then(([items, profitData, taxes, dbCosts]) => {
+        setActiveItems(items);
 
-        console.log("[rentabilidad] total items con ventas:", profitItems.length);
-        console.log("[rentabilidad] primer item:", JSON.stringify(profitItems[0]));
-        console.log("[rentabilidad] items con itemId MLA:", profitItems.filter(i => i.itemId?.startsWith("MLA")).length);
+        const pm: Record<string, ProfitItem> = {};
+        for (const pi of profitData.profitabilityByItem ?? []) pm[pi.itemId] = pi;
+        setProfitMap(pm);
 
-        console.log("[rentabilidad] costos en DB:", dbCosts.length);
-        console.log("[rentabilidad] primer costo:", JSON.stringify(dbCosts[0]));
+        const cm: Record<string, { costo: number; precioLista: number | null }> = {};
+        for (const c of dbCosts) cm[c.ml_id] = { costo: c.costo, precioLista: c.precio_lista ?? null };
+        setCosts(cm);
 
-        const matched = profitItems.filter(i => dbCosts.some(c => c.ml_id === i.itemId));
-        console.log("[rentabilidad] items que matchean con DB:", matched.length);
-
-        console.log("[billing/taxes] response:", JSON.stringify(taxes));
-
-        const newCosts: Record<string, number> = {};
-        const newSynced: Record<string, SyncedCostEntry> = {};
-        for (const row of dbCosts) {
-          newCosts[row.ml_id] = row.costo;
-          if (row.ean) newSynced[row.ml_id] = { costo: row.costo, precio_lista: row.precio_lista ?? 0 };
-        }
-        setMlCosts(newCosts);
-        setMlSyncedCosts(newSynced);
-
-        setData(profitData);
         if (taxes && !("error" in (taxes as object))) setTaxData(taxes);
         setLoading(false);
       })
       .catch((e: Error) => { setFetchError(e.message); setLoading(false); });
   }, []);
 
-  // ── Enriched items ─────────────────────────────────────
+  // ── Global weighted shipping rate ──────────────────────
+  const shippingRate = useMemo(() => {
+    if (!shippingData) return 0;
+    return (shippingData.splitRatio.ml / 100) * (shippingData.mlShippingRate ?? 0)
+      + (shippingData.splitRatio.propia / 100) * (shippingData.propiaShippingRate ?? 0);
+  }, [shippingData]);
+
+  // ── Enriched items (all active, cross-referenced) ──────
   const enrichedItems = useMemo<EnrichedItem[]>(() => {
-    if (!data) return [];
-    const taxRate = taxData?.ventasRate ?? 0; // IIBB sobre ventas del vendedor (no envíos MCA)
-    return (data.profitabilityByItem ?? []).map((item) => {
-      const synced = mlSyncedCosts[item.itemId];
-      const unitCost = synced?.costo ?? mlCosts[item.itemId] ?? null;
-      const totalCost = unitCost !== null ? unitCost * item.unitsSold : null;
-      const avgMlPrice = item.unitsSold > 0 ? item.grossRevenue / item.unitsSold : null;
-      const precioLista = synced?.precio_lista ?? null;
+    const taxRate = taxData?.ventasRate ?? 0;
+    return activeItems.map(item => {
+      const commRate = ML_COMMISSION[item.listing_type_id] ?? 0.12;
+      const commAmt = item.price * commRate;
+      const shippingAmt = item.price * (shippingRate / 100);
+      const iibbAmt = item.price * (taxRate / 100);
 
-      // Shipping estimate: percentage of this product's avg price
-      const splitML    = (shippingData?.splitRatio.ml ?? 0) / 100;
-      const splitPropia = (shippingData?.splitRatio.propia ?? 0) / 100;
-      const price = avgMlPrice ?? 0;
-      const mlShippingCost = shippingData
-        ? price * ((shippingData.mlShippingRate ?? 0) / 100) * splitML
-        : 0;
-      const propiaShippingCost = shippingData
-        ? price * ((shippingData.propiaShippingRate ?? 0) / 100) * splitPropia
-        : 0;
-      const unitShippingEst = mlShippingCost + propiaShippingCost;
-      const totalShippingEst = unitShippingEst * item.unitsSold;
+      const costEntry = costs[item.id] ?? null;
+      const unitCost = costEntry?.costo ?? null;
+      const precioLista = costEntry?.precioLista ?? null;
 
-      // Tax estimate (IIBB on gross revenue)
-      const totalTaxEst = item.grossRevenue * taxRate / 100;
-      const unitTaxEst = avgMlPrice !== null ? avgMlPrice * taxRate / 100 : 0;
+      const unitProfit = unitCost !== null
+        ? item.price - commAmt - unitCost - shippingAmt - iibbAmt
+        : null;
+      const unitMargin = unitProfit !== null && item.price > 0
+        ? (unitProfit / item.price) * 100
+        : null;
 
-      // Profit before shipping/tax (existing logic)
-      const realNetProfit = totalCost !== null
-        ? item.grossRevenue - item.totalSaleFees - totalCost : null;
-      const realMargin = realNetProfit !== null && item.grossRevenue > 0
-        ? (realNetProfit / item.grossRevenue) * 100 : null;
-
-      // Full profit including shipping + tax estimates
-      const fullNetProfit = realNetProfit !== null
-        ? realNetProfit - totalShippingEst - totalTaxEst : null;
-      const fullMargin = fullNetProfit !== null && item.grossRevenue > 0
-        ? (fullNetProfit / item.grossRevenue) * 100 : null;
+      const profitItem = profitMap[item.id];
+      const unitsSold = profitItem?.unitsSold ?? 0;
+      const grossRevenue = profitItem?.grossRevenue ?? 0;
+      const totalSaleFees = profitItem?.totalSaleFees ?? 0;
+      const categoryId = profitItem?.categoryId ?? "sin_categoria";
+      const categoryName = profitItem?.categoryName ?? "Sin categoría";
+      const totalProfit = unitProfit !== null && unitsSold > 0
+        ? unitProfit * unitsSold
+        : null;
 
       return {
-        ...item, unitCost, totalCost, realNetProfit, realMargin, precioLista, avgMlPrice,
-        unitShippingEst, totalShippingEst, unitTaxEst, totalTaxEst, fullNetProfit, fullMargin,
+        id: item.id,
+        title: item.title,
+        price: item.price,
+        listing_type_id: item.listing_type_id,
+        available_quantity: item.available_quantity,
+        sold_quantity: item.sold_quantity,
+        status: item.status,
+        permalink: (item as MLItem & { permalink?: string }).permalink ?? `https://articulo.mercadolibre.com.ar/${item.id}`,
+        categoryId,
+        categoryName,
+        unitsSold,
+        grossRevenue,
+        totalSaleFees,
+        unitCost,
+        precioLista,
+        commRate,
+        commAmt,
+        shippingRate,
+        shippingAmt,
+        iibbRate: taxRate,
+        iibbAmt,
+        unitProfit,
+        unitMargin,
+        totalProfit,
       };
     });
-  }, [data, mlCosts, mlSyncedCosts, shippingData, taxData]);
+  }, [activeItems, profitMap, costs, taxData, shippingRate]);
 
   // ── Sorted items ───────────────────────────────────────
   const sortedItems = useMemo(() => {
+    const base = tableView === "totals"
+      ? enrichedItems.filter(i => i.unitsSold > 0)
+      : enrichedItems;
     const dir = sortDir === "desc" ? -1 : 1;
-    return [...enrichedItems].sort((a, b) => {
+    return [...base].sort((a, b) => {
+      const nullLast = (av: number | null, bv: number | null): number => {
+        if (av === null && bv === null) return 0;
+        if (av === null) return 1;
+        if (bv === null) return -1;
+        return dir * (av - bv);
+      };
       switch (sortCol) {
-        case "title":         return dir * a.title.localeCompare(b.title);
-        case "categoryName":  return dir * a.categoryName.localeCompare(b.categoryName);
-        case "unitsSold":     return dir * (a.unitsSold - b.unitsSold);
-        case "grossRevenue":  return dir * (a.grossRevenue - b.grossRevenue);
-        case "totalSaleFees": return dir * (a.totalSaleFees - b.totalSaleFees);
-        case "totalCost":
-          if (a.totalCost === null && b.totalCost === null) return 0;
-          if (a.totalCost === null) return 1; if (b.totalCost === null) return -1;
-          return dir * (a.totalCost - b.totalCost);
-        case "realNetProfit": {
-          const av = a.fullNetProfit ?? a.realNetProfit;
-          const bv = b.fullNetProfit ?? b.realNetProfit;
-          if (av === null && bv === null) return 0;
-          if (av === null) return 1; if (bv === null) return -1;
-          return dir * (av - bv);
-        }
-        case "realMargin": {
-          const av = a.fullMargin ?? a.realMargin;
-          const bv = b.fullMargin ?? b.realMargin;
-          if (av === null && bv === null) return 0;
-          if (av === null) return 1; if (bv === null) return -1;
-          return dir * (av - bv);
-        }
-        case "precioLista":
-          if (a.precioLista === null && b.precioLista === null) return 0;
-          if (a.precioLista === null) return 1; if (b.precioLista === null) return -1;
-          return dir * (a.precioLista - b.precioLista);
-        case "avgMlPrice":
-          if (a.avgMlPrice === null && b.avgMlPrice === null) return 0;
-          if (a.avgMlPrice === null) return 1; if (b.avgMlPrice === null) return -1;
-          return dir * (a.avgMlPrice - b.avgMlPrice);
-        case "unitSaleFee": {
-          const av = a.unitsSold > 0 ? a.totalSaleFees / a.unitsSold : 0;
-          const bv = b.unitsSold > 0 ? b.totalSaleFees / b.unitsSold : 0;
-          return dir * (av - bv);
-        }
-        case "unitCost":
-          if (a.unitCost === null && b.unitCost === null) return 0;
-          if (a.unitCost === null) return 1; if (b.unitCost === null) return -1;
-          return dir * (a.unitCost - b.unitCost);
-        case "unitProfit": {
-          const fp = (x: EnrichedItem) => (x.fullNetProfit ?? x.realNetProfit);
-          const av = fp(a) !== null && a.unitsSold > 0 ? fp(a)! / a.unitsSold : null;
-          const bv = fp(b) !== null && b.unitsSold > 0 ? fp(b)! / b.unitsSold : null;
-          if (av === null && bv === null) return 0;
-          if (av === null) return 1; if (bv === null) return -1;
-          return dir * (av - bv);
-        }
-        case "unitShippingEst":
-          return dir * (a.unitShippingEst - b.unitShippingEst);
-        case "unitTaxEst":
-          return dir * (a.unitTaxEst - b.unitTaxEst);
-        case "fullNetProfit": {
-          const av = a.fullNetProfit; const bv = b.fullNetProfit;
-          if (av === null && bv === null) return 0;
-          if (av === null) return 1; if (bv === null) return -1;
-          return dir * (av - bv);
-        }
-        case "fullMargin": {
-          const av = a.fullMargin; const bv = b.fullMargin;
-          if (av === null && bv === null) return 0;
-          if (av === null) return 1; if (bv === null) return -1;
-          return dir * (av - bv);
-        }
-        default: return 0;
+        case "title":       return dir * a.title.localeCompare(b.title);
+        case "price":       return dir * (a.price - b.price);
+        case "commAmt":     return dir * (a.commAmt - b.commAmt);
+        case "shippingAmt": return dir * (a.shippingAmt - b.shippingAmt);
+        case "iibbAmt":     return dir * (a.iibbAmt - b.iibbAmt);
+        case "unitCost":    return nullLast(a.unitCost, b.unitCost);
+        case "unitProfit":  return nullLast(a.unitProfit, b.unitProfit);
+        case "unitMargin":  return nullLast(a.unitMargin, b.unitMargin);
+        case "unitsSold":   return dir * (a.unitsSold - b.unitsSold);
+        case "grossRevenue":return dir * (a.grossRevenue - b.grossRevenue);
+        case "totalProfit": return nullLast(a.totalProfit, b.totalProfit);
+        default:            return 0;
       }
     });
-  }, [enrichedItems, sortCol, sortDir]);
+  }, [enrichedItems, sortCol, sortDir, tableView]);
 
-  // ── Category data ──────────────────────────────────────
+  // ── Category data (only items with sales) ─────────────
   const categoryData = useMemo<CategoryRow[]>(() => {
     const map: Record<string, {
       categoryId: string; categoryName: string;
       grossRevenue: number; totalSaleFees: number;
-      unitsSold: number; skuCount: number; skusWithCost: number; partialCost: number;
+      unitsSold: number; skuCount: number; skusWithCost: number; partialProfit: number;
     }> = {};
 
-    for (const item of enrichedItems) {
+    for (const item of enrichedItems.filter(i => i.unitsSold > 0)) {
       if (!map[item.categoryId]) {
         map[item.categoryId] = {
           categoryId: item.categoryId, categoryName: item.categoryName,
           grossRevenue: 0, totalSaleFees: 0,
-          unitsSold: 0, skuCount: 0, skusWithCost: 0, partialCost: 0,
+          unitsSold: 0, skuCount: 0, skusWithCost: 0, partialProfit: 0,
         };
       }
       const cat = map[item.categoryId];
@@ -412,13 +382,13 @@ export default function RentabilidadPage() {
       cat.totalSaleFees += item.totalSaleFees;
       cat.unitsSold += item.unitsSold;
       cat.skuCount++;
-      if (item.totalCost !== null) { cat.partialCost += item.totalCost; cat.skusWithCost++; }
+      if (item.totalProfit !== null) { cat.partialProfit += item.totalProfit; cat.skusWithCost++; }
     }
 
     return Object.values(map)
-      .map(({ partialCost, ...cat }) => {
+      .map(({ partialProfit, ...cat }) => {
         const allHaveCosts = cat.skusWithCost === cat.skuCount && cat.skuCount > 0;
-        const netProfit = allHaveCosts ? cat.grossRevenue - cat.totalSaleFees - partialCost : null;
+        const netProfit = allHaveCosts ? partialProfit : null;
         const margin = netProfit !== null && cat.grossRevenue > 0
           ? (netProfit / cat.grossRevenue) * 100 : null;
         return { ...cat, netProfit, margin };
@@ -426,45 +396,21 @@ export default function RentabilidadPage() {
       .sort((a, b) => b.grossRevenue - a.grossRevenue);
   }, [enrichedItems]);
 
-  // ── Chart data ─────────────────────────────────────────
-  const chartData = categoryData.map((cat) => ({
+  const chartData = categoryData.map(cat => ({
     name: cat.categoryName,
     margin: cat.margin ?? (cat.grossRevenue > 0
       ? ((cat.grossRevenue - cat.totalSaleFees) / cat.grossRevenue) * 100 : 0),
     hasRealMargin: cat.margin !== null,
   }));
 
-  // ── Sort handler ───────────────────────────────────────
   const handleSort = (col: SortCol) => {
-    if (col === sortCol) setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    if (col === sortCol) setSortDir(d => d === "desc" ? "asc" : "desc");
     else { setSortCol(col); setSortDir("desc"); }
   };
 
-  // ── Shared styles ──────────────────────────────────────
-  const cardStyle: React.CSSProperties = {
-    background: "var(--surface)", border: "1px solid var(--border)",
-    borderRadius: "var(--radius-lg)", padding: "24px",
-  };
-
-  const labelStyle: React.CSSProperties = {
-    fontSize: "11px", fontWeight: "600", letterSpacing: "0.06em",
-    textTransform: "uppercase", color: "var(--text-muted)",
-    marginBottom: "6px", display: "block", fontFamily: "var(--font-mono)",
-  };
-
-  const inputStyle: React.CSSProperties = {
-    background: "var(--surface-2)", border: "1px solid var(--border)",
-    borderRadius: "var(--radius)", padding: "10px 14px",
-    color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "14px",
-    outline: "none", width: "100%",
-  };
-
-  const set = (field: keyof ProductCalc, value: string | number) =>
-    setForm((f) => ({ ...f, [field]: value }));
-
-  const result = calcROI(form);
-  const isProfitable = result.profit > 0;
-  const withCostCount = enrichedItems.filter((i) => i.unitCost !== null).length;
+  // ── Derived counts ─────────────────────────────────────
+  const withCostCount = enrichedItems.filter(i => i.unitCost !== null).length;
+  const withSalesCount = enrichedItems.filter(i => i.unitsSold > 0).length;
 
   const taxMonthName = useMemo(() => {
     if (!taxData) return "";
@@ -472,9 +418,41 @@ export default function RentabilidadPage() {
     return d.toLocaleString("es-AR", { month: "long" });
   }, [taxData]);
 
+  // ── Shared styles ──────────────────────────────────────
+  const cardStyle: React.CSSProperties = {
+    background: "var(--surface)", border: "1px solid var(--border)",
+    borderRadius: "var(--radius-lg)", padding: "24px",
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: "11px", fontWeight: "600", letterSpacing: "0.06em",
+    textTransform: "uppercase", color: "var(--text-muted)",
+    marginBottom: "6px", display: "block", fontFamily: "var(--font-mono)",
+  };
+  const inputStyle: React.CSSProperties = {
+    background: "var(--surface-2)", border: "1px solid var(--border)",
+    borderRadius: "var(--radius)", padding: "10px 14px",
+    color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "14px",
+    outline: "none", width: "100%",
+  };
+  const tdMono: React.CSSProperties = {
+    padding: "6px 8px", fontFamily: "var(--font-mono)", fontSize: "12px",
+  };
+  const dRowStyle: React.CSSProperties = {
+    display: "flex", justifyContent: "space-between", alignItems: "baseline",
+    padding: "7px 0", borderBottom: "1px solid var(--border)",
+  };
+  const dLabel: React.CSSProperties = { fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" };
+  const dValue: React.CSSProperties = { fontSize: "13px", fontFamily: "var(--font-mono)", fontWeight: "500" };
+
+  const set = (field: keyof ProductCalc, value: string | number) =>
+    setForm(f => ({ ...f, [field]: value }));
+
+  const result = calcROI(form);
+  const isProfitable = result.profit > 0;
+
   const SkeletonRows = ({ colSpan }: { colSpan: number }) => (
     <>
-      {[1, 2, 3, 4, 5].map((i) => (
+      {[1, 2, 3, 4, 5].map(i => (
         <tr key={i}>
           <td colSpan={colSpan} style={{ padding: "4px 0" }}>
             <div className="skeleton" style={{ height: "32px", borderRadius: "var(--radius)" }} />
@@ -483,11 +461,6 @@ export default function RentabilidadPage() {
       ))}
     </>
   );
-
-  // shared td style for data cells
-  const tdMono: React.CSSProperties = {
-    padding: "6px 8px", fontFamily: "var(--font-mono)", fontSize: "12px",
-  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
@@ -501,7 +474,7 @@ export default function RentabilidadPage() {
           Rentabilidad
         </h1>
         <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-          Análisis de márgenes reales con costos de productos
+          Análisis de márgenes por publicación activa
         </p>
       </div>
 
@@ -522,28 +495,26 @@ export default function RentabilidadPage() {
                 borderRadius: "20px", padding: "3px 10px",
                 fontFamily: "var(--font-mono)", fontSize: "11px",
               }}>
-                <span style={{ color: "var(--yellow)", fontWeight: "600" }}>IIBB ventas {taxMonthName}:</span>
-                <span style={{ color: "var(--text)" }}>{taxData.ventasRate.toFixed(2)}%{taxData.enviosRate > 0 ? ` (+${taxData.enviosRate.toFixed(2)}% envíos)` : ""}</span>
+                <span style={{ color: "var(--yellow)", fontWeight: "600" }}>IIBB {taxMonthName}:</span>
+                <span style={{ color: "var(--text)" }}>{taxData.ventasRate.toFixed(2)}%</span>
               </span>
             )}
-            {!shippingCostConfirmed && (
+            {shippingData && (
               <span style={{
                 display: "inline-flex", alignItems: "center", gap: "4px",
-                background: "rgba(255,140,0,0.08)", border: "1px solid rgba(255,140,0,0.25)",
+                background: "rgba(96,165,250,0.08)", border: "1px solid rgba(96,165,250,0.2)",
                 borderRadius: "20px", padding: "3px 10px",
                 fontFamily: "var(--font-mono)", fontSize: "11px",
-                color: "#ff8c00",
               }}>
-                ⚠ Costo de logística propia pendiente confirmar
+                <span style={{ color: "#60a5fa", fontWeight: "600" }}>Envío ponderado:</span>
+                <span style={{ color: "var(--text)" }}>{shippingRate.toFixed(1)}% del precio</span>
               </span>
             )}
           </div>
           <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
             {loading
-              ? "Cargando datos de ventas…"
-              : enrichedItems.length === 0
-              ? "Sin datos de ventas disponibles"
-              : `${enrichedItems.length} productos vendidos · ${withCostCount} con costo cargado · Hacé click para ver detalle`}
+              ? "Cargando publicaciones…"
+              : `${activeItems.length} activas · ${withSalesCount} con ventas · ${withCostCount} con costo · Hacé click para ver detalle`}
           </p>
         </div>
 
@@ -561,12 +532,12 @@ export default function RentabilidadPage() {
           <div>
             {/* View toggle */}
             <div style={{ display: "flex", gap: "4px", marginBottom: "16px", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: "3px", width: "fit-content" }}>
-              {(["unit", "totals"] as const).map((v) => (
+              {(["unit", "totals"] as const).map(v => (
                 <button
                   key={v}
                   onClick={() => {
                     setTableView(v);
-                    setSortCol(v === "unit" ? "unitProfit" : "realNetProfit");
+                    setSortCol(v === "unit" ? "unitProfit" : "grossRevenue");
                     setSortDir("desc");
                   }}
                   style={{
@@ -588,133 +559,95 @@ export default function RentabilidadPage() {
                 <thead>
                   {tableView === "unit" ? (
                     <tr>
-                      <SortHeader label="Producto"     col="title"           sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                      <SortHeader label="Categoría"    col="categoryName"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                      <SortHeader label="P. ML"        col="avgMlPrice"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Comisión u."  col="unitSaleFee"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Envío u."     col="unitShippingEst" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Imp. u."      col="unitTaxEst"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Costo u."     col="unitCost"        sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Ganancia u."  col="unitProfit"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Margen"       col="realMargin"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Producto"    col="title"        sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                      <SortHeader label="Precio"      col="price"        sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Comisión"    col="commAmt"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label={`Envío${shippingRate > 0 ? ` (${shippingRate.toFixed(1)}%)` : ""}`} col="shippingAmt" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="IIBB"        col="iibbAmt"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Costo u."    col="unitCost"     sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Ganancia u." col="unitProfit"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Margen"      col="unitMargin"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                     </tr>
                   ) : (
                     <tr>
-                      <SortHeader label="Producto"     col="title"           sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                      <SortHeader label="Categoría"    col="categoryName"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
-                      <SortHeader label="Uds."         col="unitsSold"       sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Revenue"      col="grossRevenue"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Comisión"     col="totalSaleFees"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Envío"        col="unitShippingEst" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Imp."         col="unitTaxEst"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Costo total"  col="totalCost"       sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Ganancia"     col="realNetProfit"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
-                      <SortHeader label="Margen"       col="realMargin"      sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Producto"       col="title"        sortCol={sortCol} sortDir={sortDir} onSort={handleSort} />
+                      <SortHeader label="Uds."           col="unitsSold"    sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Revenue"        col="grossRevenue" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Ganancia total" col="totalProfit"  sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
+                      <SortHeader label="Margen"         col="unitMargin"   sortCol={sortCol} sortDir={sortDir} onSort={handleSort} align="right" />
                     </tr>
                   )}
                 </thead>
                 <tbody>
                   {loading ? (
-                    <SkeletonRows colSpan={tableView === "unit" ? 9 : 10} />
+                    <SkeletonRows colSpan={tableView === "unit" ? 8 : 5} />
                   ) : tableView === "unit" ? (
-                    sortedItems.map((item) => {
-                      const unitSaleFee = item.unitsSold > 0 ? item.totalSaleFees / item.unitsSold : 0;
-                      const commUnitPct = item.avgMlPrice && item.avgMlPrice > 0 ? (unitSaleFee / item.avgMlPrice) * 100 : 0;
-                      const fullUnitProfit = item.fullNetProfit !== null && item.unitsSold > 0
-                        ? item.fullNetProfit / item.unitsSold : null;
-                      const trStyle: React.CSSProperties = { borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" };
-                      return (
-                        <tr key={item.itemId} onClick={() => setSelectedItem(item)} style={trStyle}
-                          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
-                          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                        >
-                          <td style={{ ...tdMono, maxWidth: "200px" }}>
-                            <p style={{ fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</p>
-                            <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>{item.itemId}</p>
-                          </td>
-                          <td style={{ ...tdMono, maxWidth: "120px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.categoryName}</td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>
-                            {item.avgMlPrice !== null ? formatARS(item.avgMlPrice) : <span style={{ color: "var(--text-dim)" }}>—</span>}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>
-                            <span style={{ color: "var(--red)" }}>-{formatARS(unitSaleFee)}</span>
-                            <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>{commUnitPct.toFixed(1)}%</span>
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>
-                            {shippingData === null
-                              ? <span className="skeleton" style={{ display: "inline-block", width: "40px", height: "12px", borderRadius: "3px" }} />
-                              : item.unitShippingEst > 0
-                              ? <span style={{ color: "var(--red)" }}>-{formatARS(item.unitShippingEst)}</span>
-                              : <span style={{ color: "var(--text-dim)" }}>—</span>}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>
-                            {item.unitTaxEst > 0
-                              ? <span style={{ color: "var(--red)" }}>-{formatARS(item.unitTaxEst)}</span>
-                              : <span style={{ color: "var(--text-dim)" }} title={`IIBB pendiente: ver billing de ${taxMonthName || "abril"}`}>—</span>}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right", color: item.unitCost !== null ? "var(--text)" : "var(--text-dim)" }}>
-                            {item.unitCost !== null ? `-${formatARS(item.unitCost)}` : "—"}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right", fontWeight: "600", color: fullUnitProfit === null ? "var(--text-dim)" : fullUnitProfit >= 0 ? "var(--green)" : "var(--red)" }}>
-                            {fullUnitProfit !== null ? formatARS(fullUnitProfit) : "—"}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>
-                            <MarginText margin={item.fullMargin ?? item.realMargin} />
-                          </td>
-                        </tr>
-                      );
-                    })
+                    sortedItems.map(item => (
+                      <tr key={item.id}
+                        onClick={() => setSelectedItem(item)}
+                        style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "var(--surface-2)")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <td style={{ ...tdMono, maxWidth: "220px" }}>
+                          <p style={{ fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</p>
+                          <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>{item.id}</p>
+                        </td>
+                        <td style={{ ...tdMono, textAlign: "right" }}>{formatARS(item.price)}</td>
+                        <td style={{ ...tdMono, textAlign: "right" }}>
+                          <span style={{ color: "var(--red)" }}>-{formatARS(item.commAmt)}</span>
+                          <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>{(item.commRate * 100).toFixed(1)}%</span>
+                        </td>
+                        <td style={{ ...tdMono, textAlign: "right" }}>
+                          {shippingData === null
+                            ? <span className="skeleton" style={{ display: "inline-block", width: "40px", height: "12px", borderRadius: "3px" }} />
+                            : <span style={{ color: "var(--red)" }}>-{formatARS(item.shippingAmt)}</span>}
+                        </td>
+                        <td style={{ ...tdMono, textAlign: "right" }}>
+                          {item.iibbAmt > 0
+                            ? <span style={{ color: "var(--red)" }}>-{formatARS(item.iibbAmt)}</span>
+                            : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                        </td>
+                        <td style={{ ...tdMono, textAlign: "right", color: item.unitCost !== null ? "var(--text)" : "var(--text-dim)" }}>
+                          {item.unitCost !== null ? `-${formatARS(item.unitCost)}` : "—"}
+                        </td>
+                        <td style={{ ...tdMono, textAlign: "right", fontWeight: "600", color: item.unitProfit === null ? "var(--text-dim)" : item.unitProfit >= 0 ? "var(--green)" : "var(--red)" }}>
+                          {item.unitProfit !== null ? formatARS(item.unitProfit) : "—"}
+                        </td>
+                        <td style={{ ...tdMono, textAlign: "right" }}>
+                          <MarginText margin={item.unitMargin} />
+                        </td>
+                      </tr>
+                    ))
                   ) : (
-                    sortedItems.map((item) => {
-                      const commPct = item.grossRevenue > 0 ? (item.totalSaleFees / item.grossRevenue) * 100 : 0;
-                      const trStyle: React.CSSProperties = { borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" };
-                      return (
-                        <tr key={item.itemId} onClick={() => setSelectedItem(item)} style={trStyle}
-                          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2)")}
-                          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                        >
-                          <td style={{ ...tdMono, maxWidth: "200px" }}>
-                            <p style={{ fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</p>
-                            <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>{item.itemId}</p>
-                          </td>
-                          <td style={{ ...tdMono, maxWidth: "120px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.categoryName}</td>
-                          <td style={{ ...tdMono, textAlign: "right", color: "var(--text-muted)" }}>{item.unitsSold}</td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>{formatARS(item.grossRevenue)}</td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>
-                            <span style={{ color: "var(--red)" }}>-{formatARS(item.totalSaleFees)}</span>
-                            <span style={{ display: "block", fontSize: "10px", color: "var(--text-dim)" }}>{commPct.toFixed(1)}%</span>
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>
-                            {shippingData === null
-                              ? <span className="skeleton" style={{ display: "inline-block", width: "48px", height: "12px", borderRadius: "3px" }} />
-                              : item.totalShippingEst > 0
-                              ? <span style={{ color: "var(--red)" }}>-{formatARS(item.totalShippingEst)}</span>
-                              : <span style={{ color: "var(--text-dim)" }}>—</span>}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>
-                            {item.totalTaxEst > 0
-                              ? <span style={{ color: "var(--red)" }}>-{formatARS(item.totalTaxEst)}</span>
-                              : <span style={{ color: "var(--text-dim)" }} title={`IIBB pendiente: ver billing de ${taxMonthName || "abril"}`}>—</span>}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right", color: item.totalCost !== null ? "var(--text)" : "var(--text-dim)" }}>
-                            {item.totalCost !== null ? `-${formatARS(item.totalCost)}` : "—"}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right", fontWeight: "600", color: (item.fullNetProfit ?? item.realNetProfit) === null ? "var(--text-dim)" : (item.fullNetProfit ?? item.realNetProfit)! >= 0 ? "var(--green)" : "var(--red)" }}>
-                            {(item.fullNetProfit ?? item.realNetProfit) !== null ? formatARS((item.fullNetProfit ?? item.realNetProfit)!) : "—"}
-                          </td>
-                          <td style={{ ...tdMono, textAlign: "right" }}>
-                            <MarginText margin={item.fullMargin ?? item.realMargin} />
-                          </td>
-                        </tr>
-                      );
-                    })
+                    sortedItems.map(item => (
+                      <tr key={item.id}
+                        onClick={() => setSelectedItem(item)}
+                        style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s", cursor: "pointer" }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "var(--surface-2)")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <td style={{ ...tdMono, maxWidth: "220px" }}>
+                          <p style={{ fontFamily: "var(--font-display)", fontSize: "12px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</p>
+                          <p style={{ fontFamily: "var(--font-mono)", fontSize: "10px", color: "var(--text-dim)", marginTop: "1px" }}>{item.id}</p>
+                        </td>
+                        <td style={{ ...tdMono, textAlign: "right", color: "var(--text-muted)" }}>{item.unitsSold}</td>
+                        <td style={{ ...tdMono, textAlign: "right" }}>{formatARS(item.grossRevenue)}</td>
+                        <td style={{ ...tdMono, textAlign: "right", fontWeight: "600", color: item.totalProfit === null ? "var(--text-dim)" : item.totalProfit >= 0 ? "var(--green)" : "var(--red)" }}>
+                          {item.totalProfit !== null ? formatARS(item.totalProfit) : "—"}
+                        </td>
+                        <td style={{ ...tdMono, textAlign: "right" }}>
+                          <MarginText margin={item.unitMargin} />
+                        </td>
+                      </tr>
+                    ))
                   )}
                 </tbody>
               </table>
 
               {!loading && sortedItems.length === 0 && !fetchError && (
                 <p style={{ textAlign: "center", padding: "32px", color: "var(--text-muted)", fontSize: "13px", fontFamily: "var(--font-mono)" }}>
-                  Sin ventas en los últimos 30 días
+                  {tableView === "totals" ? "Sin ventas en el período" : "Sin publicaciones activas"}
                 </p>
               )}
             </div>
@@ -732,13 +665,13 @@ export default function RentabilidadPage() {
             Rentabilidad por categoría
           </p>
           <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-            Revenue y márgenes agrupados por categoría de Mercado Libre
+            Revenue y márgenes de productos con ventas en el período
           </p>
         </div>
 
         {loading && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: "12px", marginBottom: "24px" }}>
-            {[1, 2, 3].map((i) => (
+            {[1, 2, 3].map(i => (
               <div key={i} className="skeleton" style={{ height: "120px", borderRadius: "var(--radius-lg)" }} />
             ))}
           </div>
@@ -750,7 +683,7 @@ export default function RentabilidadPage() {
               display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))",
               gap: "12px", marginBottom: "24px",
             }}>
-              {categoryData.map((cat) => (
+              {categoryData.map(cat => (
                 <div key={cat.categoryId} style={{
                   background: "var(--surface-2)", border: "1px solid var(--border)",
                   borderRadius: "var(--radius-lg)", padding: "16px",
@@ -767,16 +700,13 @@ export default function RentabilidadPage() {
                       {cat.skuCount} SKU{cat.skuCount !== 1 ? "s" : ""}
                     </span>
                   </div>
-
                   <p style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: "800", marginBottom: "2px" }}>
                     {formatARS(cat.grossRevenue)}
                   </p>
                   <p style={{ fontSize: "10px", color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginBottom: "8px" }}>
                     revenue bruto · {cat.unitsSold} u.
                   </p>
-
                   <MarginText margin={cat.margin} />
-
                   {cat.margin === null && cat.skusWithCost < cat.skuCount && (
                     <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "6px" }}>
                       {cat.skusWithCost}/{cat.skuCount} con costo
@@ -857,25 +787,25 @@ export default function RentabilidadPage() {
           }}>
             <div>
               <label style={labelStyle}>Nombre del producto</label>
-              <input type="text" value={form.title} onChange={(e) => set("title", e.target.value)}
+              <input type="text" value={form.title} onChange={e => set("title", e.target.value)}
                 placeholder="ej: Auriculares Bluetooth JBL" style={inputStyle} />
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
               <div>
                 <label style={labelStyle}>Costo ($)</label>
-                <input type="number" value={form.costPrice || ""} onChange={(e) => set("costPrice", parseFloat(e.target.value) || 0)} placeholder="0" style={inputStyle} />
+                <input type="number" value={form.costPrice || ""} onChange={e => set("costPrice", parseFloat(e.target.value) || 0)} placeholder="0" style={inputStyle} />
               </div>
               <div>
                 <label style={labelStyle}>Precio de venta ($)</label>
-                <input type="number" value={form.salePrice || ""} onChange={(e) => set("salePrice", parseFloat(e.target.value) || 0)} placeholder="0" style={inputStyle} />
+                <input type="number" value={form.salePrice || ""} onChange={e => set("salePrice", parseFloat(e.target.value) || 0)} placeholder="0" style={inputStyle} />
               </div>
             </div>
 
             <div>
               <label style={labelStyle}>Tipo de publicación</label>
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                {ML_FEE_TYPES.map((t) => (
+                {ML_FEE_TYPES.map(t => (
                   <button
                     key={t.label}
                     onClick={() => set("mlFeePercent", t.value === 0 ? form.mlFeePercent : t.value)}
@@ -893,24 +823,24 @@ export default function RentabilidadPage() {
               </div>
               <div style={{ marginTop: "10px" }}>
                 <label style={labelStyle}>Comisión ML (%)</label>
-                <input type="number" value={form.mlFeePercent} onChange={(e) => set("mlFeePercent", parseFloat(e.target.value) || 0)} style={{ ...inputStyle, width: "120px" }} />
+                <input type="number" value={form.mlFeePercent} onChange={e => set("mlFeePercent", parseFloat(e.target.value) || 0)} style={{ ...inputStyle, width: "120px" }} />
               </div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
               <div>
                 <label style={labelStyle}>Envío ($)</label>
-                <input type="number" value={form.shippingCost || ""} onChange={(e) => set("shippingCost", parseFloat(e.target.value) || 0)} placeholder="0" style={inputStyle} />
+                <input type="number" value={form.shippingCost || ""} onChange={e => set("shippingCost", parseFloat(e.target.value) || 0)} placeholder="0" style={inputStyle} />
               </div>
               <div>
                 <label style={labelStyle}>Otros costos ($)</label>
-                <input type="number" value={form.otherCosts || ""} onChange={(e) => set("otherCosts", parseFloat(e.target.value) || 0)} placeholder="Empaque, etc." style={inputStyle} />
+                <input type="number" value={form.otherCosts || ""} onChange={e => set("otherCosts", parseFloat(e.target.value) || 0)} placeholder="Empaque, etc." style={inputStyle} />
               </div>
             </div>
 
             <div>
               <label style={labelStyle}>Cantidad a vender</label>
-              <input type="number" value={form.quantity} onChange={(e) => set("quantity", parseInt(e.target.value) || 1)} min={1} style={{ ...inputStyle, width: "120px" }} />
+              <input type="number" value={form.quantity} onChange={e => set("quantity", parseInt(e.target.value) || 1)} min={1} style={{ ...inputStyle, width: "120px" }} />
             </div>
           </div>
 
@@ -984,22 +914,16 @@ export default function RentabilidadPage() {
       {/* ── Detail drawer ─────────────────────────────── */}
       {selectedItem && (
         <>
-          {/* Backdrop */}
           <div
             onClick={() => setSelectedItem(null)}
-            style={{
-              position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
-              zIndex: 100, backdropFilter: "blur(2px)",
-            }}
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 100, backdropFilter: "blur(2px)" }}
           />
 
-          {/* Panel */}
           <div style={{
             position: "fixed", top: 0, right: 0, bottom: 0,
             width: "min(420px, 100vw)",
             background: "var(--surface)", borderLeft: "1px solid var(--border)",
-            zIndex: 101, overflowY: "auto",
-            display: "flex", flexDirection: "column",
+            zIndex: 101, overflowY: "auto", display: "flex", flexDirection: "column",
           }}>
             {/* Header */}
             <div style={{
@@ -1007,192 +931,164 @@ export default function RentabilidadPage() {
               display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px",
             }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontFamily: "var(--font-display)", fontSize: "15px", fontWeight: "700", marginBottom: "4px" }}>
+                <p style={{ fontFamily: "var(--font-display)", fontSize: "14px", fontWeight: "700", marginBottom: "6px", lineHeight: "1.3" }}>
                   {selectedItem.title}
                 </p>
-                <p style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--yellow)" }}>
-                  {selectedItem.itemId}
-                </p>
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <a
+                    href={selectedItem.permalink} target="_blank" rel="noopener noreferrer"
+                    onClick={e => e.stopPropagation()}
+                    style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--yellow)", textDecoration: "none" }}
+                  >
+                    {selectedItem.id} ↗
+                  </a>
+                  <span style={{
+                    fontSize: "10px", fontWeight: "600", fontFamily: "var(--font-display)",
+                    color: STATUS_COLOR[selectedItem.status] ?? "var(--text-dim)",
+                    background: `${STATUS_COLOR[selectedItem.status] ?? "#666"}20`,
+                    border: `1px solid ${STATUS_COLOR[selectedItem.status] ?? "#666"}40`,
+                    borderRadius: "4px", padding: "1px 7px",
+                  }}>
+                    {STATUS_LABEL[selectedItem.status] ?? selectedItem.status}
+                  </span>
+                </div>
               </div>
               <button
                 onClick={() => setSelectedItem(null)}
-                style={{
-                  background: "var(--surface-2)", border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)", padding: "6px 10px", color: "var(--text-muted)",
-                  fontFamily: "var(--font-mono)", fontSize: "13px", cursor: "pointer", flexShrink: 0,
-                }}
+                style={{ background: "transparent", border: "none", color: "var(--text-muted)", fontSize: "18px", cursor: "pointer", padding: "2px 6px", flexShrink: 0, lineHeight: 1 }}
               >
                 ✕
               </button>
             </div>
 
-            <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "24px", flex: 1 }}>
-              {/* P&L Breakdown */}
-              <div>
-                <p style={{ ...labelStyle, marginBottom: "14px" }}>Desglose P&L</p>
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                  {[
-                    { label: "Revenue bruto", value: selectedItem.grossRevenue, color: "var(--text)", sign: "" },
-                    {
-                      label: `Comisión ML (${selectedItem.grossRevenue > 0 ? ((selectedItem.totalSaleFees / selectedItem.grossRevenue) * 100).toFixed(1) : "0"}%)`,
-                      value: selectedItem.totalSaleFees, color: "var(--red)", sign: "-",
-                    },
-                    ...(selectedItem.totalCost !== null
-                      ? [{ label: `Costo total (${selectedItem.unitsSold} u.)`, value: selectedItem.totalCost, color: "var(--red)", sign: "-" }]
-                      : []),
-                    ...(selectedItem.totalShippingEst > 0
-                      ? [{ label: `Envío (~${shippingData?.splitRatio.propia.toFixed(0) ?? "?"}% logística propia)`, value: selectedItem.totalShippingEst, color: "var(--red)", sign: "-" }]
-                      : []),
-                    ...(selectedItem.totalTaxEst > 0
-                      ? [{ label: `IIBB ventas (~${taxData?.ventasRate.toFixed(2) ?? "?"}%)`, value: selectedItem.totalTaxEst, color: "var(--red)", sign: "-" }]
-                      : []),
-                  ].map(({ label, value, color, sign }) => (
-                    <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{label}</span>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: "500", color }}>
-                        {sign}{formatARS(value)}
-                      </span>
-                    </div>
-                  ))}
+            {/* Body */}
+            <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: "20px", flex: 1 }}>
 
-                  <div style={{ borderTop: "1px solid var(--border)", paddingTop: "10px", display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: "13px", fontFamily: "var(--font-display)", fontWeight: "700" }}>
-                      {selectedItem.fullNetProfit !== null ? "Ganancia neta" : "Ganancia antes de imp."}
+              {/* Per-unit breakdown */}
+              <section>
+                <p style={{ ...labelStyle, marginBottom: "12px" }}>Desglose por unidad</p>
+                <div>
+                  <div style={dRowStyle}>
+                    <span style={dLabel}>Precio de venta</span>
+                    <span style={{ ...dValue, color: "var(--text)", fontWeight: "700" }}>{formatARS(selectedItem.price)}</span>
+                  </div>
+                  <div style={dRowStyle}>
+                    <span style={dLabel}>Comisión ML ({(selectedItem.commRate * 100).toFixed(1)}%)</span>
+                    <span style={{ ...dValue, color: "var(--red)" }}>−{formatARS(selectedItem.commAmt)}</span>
+                  </div>
+                  <div style={dRowStyle}>
+                    <span style={dLabel}>Costo producto</span>
+                    <span style={{ ...dValue, color: selectedItem.unitCost !== null ? "var(--red)" : "var(--text-dim)" }}>
+                      {selectedItem.unitCost !== null ? `−${formatARS(selectedItem.unitCost)}` : "Sin costo cargado"}
                     </span>
+                  </div>
+                  <div style={dRowStyle}>
+                    <span style={dLabel}>
+                      Envío est. ({selectedItem.shippingRate.toFixed(1)}%)
+                    </span>
+                    <span style={{ ...dValue, color: selectedItem.shippingAmt > 0 ? "var(--red)" : "var(--text-dim)" }}>
+                      {selectedItem.shippingAmt > 0
+                        ? `−${formatARS(selectedItem.shippingAmt)}`
+                        : shippingData ? "—" : "Cargando…"}
+                    </span>
+                  </div>
+                  <div style={{ ...dRowStyle, borderBottom: "none" }}>
+                    <span style={dLabel}>IIBB ({selectedItem.iibbRate.toFixed(2)}%)</span>
+                    <span style={{ ...dValue, color: selectedItem.iibbAmt > 0 ? "var(--red)" : "var(--text-dim)" }}>
+                      {selectedItem.iibbAmt > 0
+                        ? `−${formatARS(selectedItem.iibbAmt)}`
+                        : taxData ? "—" : "Cargando…"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Profit box */}
+                <div style={{
+                  marginTop: "12px", padding: "14px",
+                  background: selectedItem.unitProfit == null ? "var(--surface-2)" : selectedItem.unitProfit >= 0 ? "var(--green-dim)" : "var(--red-dim)",
+                  border: `1px solid ${selectedItem.unitProfit == null ? "var(--border)" : selectedItem.unitProfit >= 0 ? "rgba(0,212,160,0.25)" : "rgba(255,68,88,0.25)"}`,
+                  borderRadius: "var(--radius)",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
+                    <span style={{ ...labelStyle, marginBottom: 0 }}>Ganancia por unidad</span>
+                    <span style={{
+                      fontFamily: "var(--font-display)", fontSize: "20px", fontWeight: "800",
+                      color: selectedItem.unitProfit == null ? "var(--text-dim)" : selectedItem.unitProfit >= 0 ? "var(--green)" : "var(--red)",
+                    }}>
+                      {selectedItem.unitProfit !== null ? formatARS(selectedItem.unitProfit) : "—"}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ ...labelStyle, marginBottom: 0 }}>Margen</span>
                     <span style={{
                       fontFamily: "var(--font-mono)", fontSize: "14px", fontWeight: "700",
-                      color: (selectedItem.fullNetProfit ?? selectedItem.realNetProfit) === null ? "var(--text-dim)"
-                        : (selectedItem.fullNetProfit ?? selectedItem.realNetProfit)! >= 0 ? "var(--green)" : "var(--red)",
+                      color: selectedItem.unitMargin == null ? "var(--text-dim)"
+                        : selectedItem.unitMargin > 20 ? "var(--green)"
+                        : selectedItem.unitMargin >= 10 ? "var(--yellow)"
+                        : "var(--red)",
                     }}>
-                      {(selectedItem.fullNetProfit ?? selectedItem.realNetProfit) !== null
-                        ? formatARS((selectedItem.fullNetProfit ?? selectedItem.realNetProfit)!)
-                        : "—"}
+                      {selectedItem.unitMargin !== null ? `${selectedItem.unitMargin.toFixed(1)}%` : "—"}
                     </span>
                   </div>
+                  {selectedItem.unitProfit == null && (
+                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "6px" }}>
+                      Cargá el costo del producto para calcular la ganancia
+                    </p>
+                  )}
                 </div>
-              </div>
+              </section>
 
-              {/* Taxes section */}
-              <div style={{
-                padding: "16px",
-                background: "var(--surface-2)",
-                border: "1px solid var(--border)",
-                borderRadius: "var(--radius)",
-              }}>
-                <p style={{ ...labelStyle, marginBottom: "12px" }}>
-                  Percepciones IIBB
-                  {taxData && (
-                    <span style={{ color: "var(--text-dim)", fontWeight: "400", marginLeft: "6px", textTransform: "none" }}>
-                      (base {taxMonthName})
-                    </span>
-                  )}
-                </p>
-                {taxData && taxData.ventasRate > 0 ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: "13px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                        IIBB ventas
-                      </span>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: "600", color: "var(--red)" }}>
-                        {taxData.ventasRate.toFixed(2)}% → -{formatARS(selectedItem.totalTaxEst)}
-                      </span>
-                    </div>
-                    {taxData.enviosRate > 0 && (
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                          IIBB envíos (liquidado por ML)
-                        </span>
-                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--text-dim)" }}>
-                          {taxData.enviosRate.toFixed(2)}%
-                        </span>
-                      </div>
-                    )}
-                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.5" }}>
-                      Estimado sobre revenue bruto. IVA se liquida por separado en billing mensual.
-                    </p>
-                  </div>
-                ) : (
-                  <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.6" }}>
-                    IIBB: datos del período actual en proceso. Ver billing de {taxMonthName || "mes anterior"}.
-                  </p>
-                )}
-              </div>
-
-              {/* Shipping estimate */}
-              <div style={{
-                padding: "16px", background: "var(--surface-2)",
-                border: "1px solid var(--border)", borderRadius: "var(--radius)",
-              }}>
-                <p style={{ ...labelStyle, marginBottom: "12px" }}>
-                  Envío estimado
-                  {shippingData && !shippingCostConfirmed && (
-                    <span style={{ color: "#ff8c00", fontWeight: "400", marginLeft: "6px", textTransform: "none" }}>
-                      ⚠ costo pendiente confirmar
-                    </span>
-                  )}
-                </p>
-                {shippingData ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {/* Logística propia */}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                        Envío propio (~{shippingData.splitRatio.propia.toFixed(0)}% órdenes)
-                      </span>
-                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: "var(--text)" }}>
-                        {shippingData.propiaShippingRate.toFixed(1)}% del precio
-                        <span style={{ fontSize: "10px", color: "var(--text-dim)", marginLeft: "4px" }}>est.</span>
-                      </span>
-                    </div>
-                    {/* Mercado Envíos */}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                        Envío ML (~{shippingData.splitRatio.ml.toFixed(0)}% órdenes)
-                      </span>
-                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", color: shippingData.mlShippingRate > 0 ? "var(--text)" : "var(--text-dim)" }}>
-                        {shippingData.mlShippingRate > 0 ? `${shippingData.mlShippingRate.toFixed(1)}% del precio` : "comprador paga"}
-                      </span>
-                    </div>
-                    {/* Total estimado */}
-                    <div style={{ borderTop: "1px solid var(--border)", paddingTop: "8px", display: "flex", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: "12px", fontFamily: "var(--font-display)", fontWeight: "600" }}>Envío estimado /u.</span>
-                      <span style={{ fontSize: "12px", fontFamily: "var(--font-mono)", fontWeight: "600", color: selectedItem.unitShippingEst > 0 ? "var(--red)" : "var(--text-dim)" }}>
-                        {selectedItem.unitShippingEst > 0 ? `-${formatARS(selectedItem.unitShippingEst)}` : "—"}
-                      </span>
-                    </div>
-                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.5" }}>
-                      Basado en {shippingData.totalAnalyzed} envíos recientes.
-                    </p>
-                  </div>
-                ) : (
-                  <p style={{ fontSize: "12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: "1.6" }}>
-                    Cargando datos de envíos…
-                  </p>
-                )}
-              </div>
-
-              {/* Unit info */}
-              {selectedItem.unitCost !== null && (
-                <div style={{
-                  background: "var(--surface-2)", border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)", padding: "14px",
-                  display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px",
-                }}>
+              {/* Sales section */}
+              {selectedItem.unitsSold > 0 && (
+                <section>
+                  <p style={{ ...labelStyle, marginBottom: "12px" }}>Ventas del período</p>
                   <div>
-                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "4px" }}>COSTO UNITARIO</p>
+                    <div style={dRowStyle}>
+                      <span style={dLabel}>Unidades vendidas</span>
+                      <span style={{ ...dValue, color: "var(--text)" }}>{selectedItem.unitsSold}</span>
+                    </div>
+                    <div style={dRowStyle}>
+                      <span style={dLabel}>Revenue total</span>
+                      <span style={{ ...dValue, color: "var(--text)" }}>{formatARS(selectedItem.grossRevenue)}</span>
+                    </div>
+                    <div style={{ ...dRowStyle, borderBottom: "none" }}>
+                      <span style={{ ...dLabel, fontWeight: "600" }}>Ganancia total est.</span>
+                      <span style={{
+                        ...dValue, fontWeight: "700",
+                        color: selectedItem.totalProfit == null ? "var(--text-dim)"
+                          : selectedItem.totalProfit >= 0 ? "var(--green)" : "var(--red)",
+                      }}>
+                        {selectedItem.totalProfit !== null ? formatARS(selectedItem.totalProfit) : "Cargá el costo"}
+                      </span>
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {/* Stock / price lista */}
+              <div style={{
+                display: "grid", gridTemplateColumns: selectedItem.precioLista !== null ? "1fr 1fr" : "1fr",
+                gap: "12px", padding: "14px",
+                background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--radius)",
+              }}>
+                <div>
+                  <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "4px" }}>STOCK</p>
+                  <p style={{
+                    fontFamily: "var(--font-mono)", fontSize: "15px", fontWeight: "700",
+                    color: selectedItem.available_quantity === 0 ? "var(--red)" : selectedItem.available_quantity <= 3 ? "var(--yellow)" : "var(--green)",
+                  }}>
+                    {selectedItem.available_quantity}
+                  </p>
+                </div>
+                {selectedItem.precioLista !== null && (
+                  <div>
+                    <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "4px" }}>P. LISTA</p>
                     <p style={{ fontFamily: "var(--font-mono)", fontSize: "15px", fontWeight: "700", color: "var(--text)" }}>
-                      {formatARS(selectedItem.unitCost)}
+                      {formatARS(selectedItem.precioLista)}
                     </p>
                   </div>
-                  {selectedItem.avgMlPrice !== null && (
-                    <div>
-                      <p style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginBottom: "4px" }}>P. ML PROM.</p>
-                      <p style={{ fontFamily: "var(--font-mono)", fontSize: "15px", fontWeight: "700", color: "var(--text)" }}>
-                        {formatARS(selectedItem.avgMlPrice)}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         </>
