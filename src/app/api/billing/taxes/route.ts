@@ -50,17 +50,34 @@ function extractSummary(raw: MLPerceptionsResponse): MLPerception[] {
   return Array.isArray(nested) ? nested : [];
 }
 
-function calcRate(perceptions: MLPerception[]): { total: number; rate: number } {
+function calcRate(
+  perceptions: MLPerception[],
+  allSummary: MLPerception[]
+): { total: number; taxable: number; rate: number } {
   const total = perceptions.reduce(
     (s, p) => s + (typeof p.amount === "number" ? p.amount : 0),
     0
   );
-  const maxTaxable = perceptions.reduce(
+  let taxable = perceptions.reduce(
     (m, p) => Math.max(m, typeof p.taxable_amount === "number" ? p.taxable_amount : 0),
     0
   );
-  const rate = maxTaxable > 0 ? (total / maxTaxable) * 100 : 0;
-  return { total, rate };
+  // Fallback: if group has no taxable_amount, use max across entire summary
+  if (taxable <= 0) {
+    taxable = allSummary.reduce(
+      (m, p) => Math.max(m, typeof p.taxable_amount === "number" ? p.taxable_amount : 0),
+      0
+    );
+  }
+  // Last resort: sum of all taxable_amounts
+  if (taxable <= 0) {
+    taxable = allSummary.reduce(
+      (s, p) => s + (typeof p.taxable_amount === "number" ? p.taxable_amount : 0),
+      0
+    );
+  }
+  const rate = taxable > 0 ? (total / taxable) * 100 : 0;
+  return { total, taxable, rate };
 }
 
 export async function GET() {
@@ -129,12 +146,21 @@ export async function GET() {
   const ventasPerceptions = summary.filter((p) => p.society === "ML");
   const enviosPerceptions = summary.filter((p) => p.society === "MCA");
 
-  const { total: ventasTotal, rate: ventasRate } = calcRate(ventasPerceptions);
-  const { total: enviosTotal, rate: enviosRate } = calcRate(enviosPerceptions);
+  console.log("[billing/taxes] ML perceptions summary count:", summary.length);
+  console.log("[billing/taxes] ventasPerceptions:", JSON.stringify(ventasPerceptions.map(p => ({
+    type: p.tax_type, amount: p.amount, taxable: p.taxable_amount, aliquot: p.aliquot
+  }))));
+
+  const { total: ventasTotal, taxable: ventasTaxable, rate: ventasRate } = calcRate(ventasPerceptions, summary);
+  const { total: enviosTotal, taxable: enviosTaxable, rate: enviosRate } = calcRate(enviosPerceptions, summary);
   const combinedRate = ventasRate + enviosRate;
 
+  console.log("[billing/taxes] ventasTotal:", ventasTotal);
+  console.log("[billing/taxes] ventasTaxable (max):", ventasTaxable);
+  console.log("[billing/taxes] ventasRate:", ventasRate);
   console.log(
-    "[billing/taxes] ventasRate:", ventasRate,
+    "[billing/taxes] enviosTotal:", enviosTotal,
+    "enviosTaxable:", enviosTaxable,
     "enviosRate:", enviosRate,
     "combinedRate:", combinedRate
   );
@@ -144,7 +170,7 @@ export async function GET() {
     ventasRate,
     enviosRate,
     combinedRate,
-    iibbVentas: { total: ventasTotal, rate: ventasRate, count: ventasPerceptions.length },
-    iibbEnvios: { total: enviosTotal, rate: enviosRate, count: enviosPerceptions.length },
+    iibbVentas: { total: ventasTotal, taxable: ventasTaxable, rate: ventasRate, count: ventasPerceptions.length },
+    iibbEnvios: { total: enviosTotal, taxable: enviosTaxable, rate: enviosRate, count: enviosPerceptions.length },
   });
 }
