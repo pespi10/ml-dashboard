@@ -30,6 +30,7 @@ interface MLShipmentCosts {
 
 interface OrderWithShipping {
   id: number;
+  total_amount?: number;
   shipping?: { id?: number } | null;
 }
 
@@ -141,6 +142,17 @@ export async function GET() {
     ? Math.round(sellerCosts.reduce((s, c) => s + c, 0) / sellerCosts.length)
     : 0;
 
+  const orderRevenues = orders.map(o => o.total_amount ?? 0).filter(v => v > 0);
+  const avgOrderRevenue = orderRevenues.length > 0
+    ? Math.round(orderRevenues.reduce((s, v) => s + v, 0) / orderRevenues.length)
+    : 0;
+  const mlShippingRate = avgOrderRevenue > 0
+    ? Math.round((avgSellerCost / avgOrderRevenue) * 10000) / 100
+    : 0;
+  const propiaShippingRate = avgOrderRevenue > 0
+    ? Math.round((LOGISTICA_PROPIA_COSTO_POR_PEDIDO / avgOrderRevenue) * 10000) / 100
+    : 0;
+
   const pct = (n: number) => total > 0 ? Math.round((n / total) * 1000) / 10 : 0;
   const pctOfMl = (n: number) => mlCount > 0 ? Math.round((n / mlCount) * 1000) / 10 : 0;
 
@@ -152,6 +164,9 @@ export async function GET() {
     analyzedShipments: total,
     avgMLShippingCost: avgSellerCost,
     avgSellerCost,
+    avgOrderRevenue,
+    mlShippingRate,
+    propiaShippingRate,
     pctSellerPays: pctOfMl(sellerPaidCount),
     pctBuyerPays: pctOfMl(buyerPaidCount),
     pctShared: pctOfMl(sharedCount),

@@ -31,8 +31,6 @@ const ML_COMMISSION: Record<string, number> = {
   free: 0,
 };
 
-const ENVIO_PROPIO = 7000;
-
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Tab = "active" | "paused" | "closed" | "all";
@@ -45,6 +43,10 @@ type ProductCost = {
 
 type ShippingData = {
   avgSellerCost: number;
+  mlShippingRate: number;
+  propiaShippingRate: number;
+  splitRatio: { ml: number; propia: number };
+  pctSellerPays: number;
 };
 
 type TaxData = {
@@ -131,7 +133,15 @@ export default function ProductosPage() {
       for (const c of (costsData as ProductCost[] ?? [])) costsMap[c.ml_id] = c;
       setCosts(costsMap);
 
-      if (shippingData?.avgSellerCost != null) setShipping({ avgSellerCost: shippingData.avgSellerCost });
+      if (shippingData && !("error" in shippingData)) {
+        setShipping({
+          avgSellerCost: shippingData.avgSellerCost ?? 0,
+          mlShippingRate: shippingData.mlShippingRate ?? 0,
+          propiaShippingRate: shippingData.propiaShippingRate ?? 0,
+          splitRatio: shippingData.splitRatio ?? { ml: 100, propia: 0 },
+          pctSellerPays: shippingData.pctSellerPays ?? 100,
+        });
+      }
       if (taxData?.ventasRate != null) setTaxes({ ventasRate: taxData.ventasRate });
 
       if (profitData?.profitabilityByItem) {
@@ -211,15 +221,24 @@ export default function ProductosPage() {
     const commRate = ML_COMMISSION[selected.listing_type_id] ?? 0.12;
     const commAmt = price * commRate;
     const costo = costs[selected.id]?.costo ?? null;
-    const avgShip = shipping?.avgSellerCost ?? null;
     const iibbRate = taxes?.ventasRate ?? null;
-    const iibbAmt = iibbRate != null ? price * iibbRate : null;
+    const iibbAmt = iibbRate != null ? price * (iibbRate / 100) : null;
+
+    const mlShippingCost = shipping != null
+      ? price * (shipping.mlShippingRate / 100) * (shipping.splitRatio.ml / 100)
+      : null;
+    const propiaShippingCost = shipping != null
+      ? price * (shipping.propiaShippingRate / 100) * (shipping.splitRatio.propia / 100)
+      : null;
+    const avgShip = mlShippingCost != null && propiaShippingCost != null
+      ? mlShippingCost + propiaShippingCost
+      : null;
 
     const canCompute = costo != null && avgShip != null && iibbAmt != null;
     const ganancia = canCompute ? price - commAmt - costo! - avgShip! - iibbAmt! : null;
     const margen = ganancia != null && price > 0 ? ganancia / price : null;
 
-    return { price, commRate, commAmt, costo, avgShip, iibbRate, iibbAmt, ganancia, margen };
+    return { price, commRate, commAmt, costo, avgShip, mlShippingCost, propiaShippingCost, iibbRate, iibbAmt, ganancia, margen };
   }, [selected, costs, shipping, taxes]);
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -379,21 +398,28 @@ export default function ProductosPage() {
                     <span style={{ ...rowValue, color: "var(--red)" }}>−{formatARS(panelCalc.commAmt)}</span>
                   </div>
                   <div style={rowStyle}>
-                    <span style={rowLabel}>Envío ML promedio</span>
-                    <span style={{ ...rowValue, color: panelCalc.avgShip != null ? "var(--red)" : "var(--text-dim)" }}>
-                      {panelCalc.avgShip != null ? `−${formatARS(panelCalc.avgShip)}` : "Sin datos"}
+                    <span style={rowLabel}>
+                      Envío ML (~{shipping?.splitRatio.ml.toFixed(0) ?? "?"}%)
+                    </span>
+                    <span style={{ ...rowValue, color: panelCalc.mlShippingCost != null && panelCalc.mlShippingCost > 0 ? "var(--red)" : "var(--text-dim)" }}>
+                      {panelCalc.mlShippingCost != null
+                        ? `${shipping!.mlShippingRate.toFixed(1)}% → −${formatARS(panelCalc.mlShippingCost)}`
+                        : "Sin datos"}
                     </span>
                   </div>
                   <div style={rowStyle}>
-                    <span style={rowLabel}>Envío propio (CABA/GBA Norte)</span>
+                    <span style={rowLabel}>
+                      Envío propio (~{shipping?.splitRatio.propia.toFixed(0) ?? "?"}%)
+                    </span>
                     <span style={{ ...rowValue, color: "var(--text-muted)" }}>
-                      −{formatARS(ENVIO_PROPIO)}
-                      <span style={{ fontSize: "9px", color: "var(--text-dim)", marginLeft: "4px" }}>est.</span>
+                      {panelCalc.propiaShippingCost != null
+                        ? <>{shipping!.propiaShippingRate.toFixed(1)}% → −{formatARS(panelCalc.propiaShippingCost)}<span style={{ fontSize: "9px", color: "var(--text-dim)", marginLeft: "4px" }}>est.</span></>
+                        : "Sin datos"}
                     </span>
                   </div>
                   <div style={{ ...rowStyle }}>
                     <span style={rowLabel}>
-                      IIBB estimado{panelCalc.iibbRate != null ? ` (${(panelCalc.iibbRate * 100).toFixed(2)}%)` : ""}
+                      IIBB estimado{panelCalc.iibbRate != null ? ` (${panelCalc.iibbRate.toFixed(2)}%)` : ""}
                     </span>
                     <span style={{ ...rowValue, color: panelCalc.iibbAmt != null ? "var(--red)" : "var(--text-dim)" }}>
                       {panelCalc.iibbAmt != null ? `−${formatARS(panelCalc.iibbAmt)}` : "Sin datos"}
