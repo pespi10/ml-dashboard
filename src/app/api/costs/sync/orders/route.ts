@@ -31,56 +31,73 @@ export async function POST() {
   console.log("[sync/orders] tokens:", tokens ? `OK user=${tokens.user_id}` : "NULL");
   if (!tokens) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  // 1. Build seller_sku → { ml_id, title } from last 1000 orders (desc)
+  // 1. Diagnostic fetch — raw request with minimal params
+  const diagUrl = `https://api.mercadolibre.com/orders/search?seller=${tokens.user_id}&limit=100&offset=0`;
+  console.log("[sync/orders] URL:", diagUrl);
+  const diagRes = await fetch(diagUrl, {
+    headers: { Authorization: `Bearer ${tokens.access_token}` },
+    cache: "no-store",
+  });
+  const diagText = await diagRes.text();
+  console.log("[sync/orders] status:", diagRes.status);
+  console.log("[sync/orders] response:", diagText.slice(0, 500));
+
+  if (!diagRes.ok) {
+    return NextResponse.json(
+      { error: `ML ${diagRes.status}`, detail: diagText.slice(0, 500), url: diagUrl },
+      { status: 502 }
+    );
+  }
+
+  // 2. Build seller_sku → { ml_id, title } from last 1000 orders
   const orderMap = new Map<string, { id: string; title: string }>();
   let offset = 0;
   let pages = 0;
 
-  // Try with sort first; fall back to plain URL + date filter if 4xx
-  const DATE_FROM = "2025-01-01T00:00:00.000-00:00";
-  const buildUrl = (useSort: boolean) =>
-    useSort
-      ? `/orders/search?seller=${tokens.user_id}&limit=${ORDER_LIMIT}&offset=${offset}&sort=date_desc&order=date_created.desc`
-      : `/orders/search?seller=${tokens.user_id}&limit=${ORDER_LIMIT}&offset=${offset}&order.date_created.from=${encodeURIComponent(DATE_FROM)}`;
+  // Parse the first page we already fetched
+  let firstPage: OrdersSearchResult;
+  try {
+    firstPage = JSON.parse(diagText) as OrdersSearchResult;
+  } catch {
+    return NextResponse.json({ error: "Failed to parse orders response", detail: diagText.slice(0, 200) }, { status: 502 });
+  }
 
-  let useSort = true;
-
-  while (pages < MAX_PAGES) {
-    const url = buildUrl(useSort);
-    console.log("[sync/orders] fetching:", url);
-    let search: OrdersSearchResult;
-    try {
-      search = await mlGet<OrdersSearchResult>(url, tokens.access_token);
-    } catch (err) {
-      const errStr = String(err);
-      // If sort params cause a 400, retry once without them
-      if (useSort && errStr.includes("400")) {
-        console.warn("[sync/orders] sort URL returned 400, retrying without sort");
-        useSort = false;
-        continue;
-      }
-      console.error("[sync/orders] fetch failed on page", pages, "url:", url, "error:", errStr);
-      return NextResponse.json(
-        { error: "Failed to fetch orders", detail: errStr, page: pages, url },
-        { status: 502 }
-      );
-    }
-    const orders = search.results ?? [];
-    console.log("[sync/orders] page", pages, "orders fetched:", orders.length, "total:", search.paging?.total);
-    if (orders.length > 0) {
-      console.log("[sync/orders] sample order seller_sku:", orders[0]?.order_items?.[0]?.item?.seller_sku);
-    }
-    for (const order of orders) {
+  const processPage = (search: OrdersSearchResult) => {
+    for (const order of search.results ?? []) {
       for (const oi of order.order_items ?? []) {
         const { id, seller_sku, title } = oi.item;
-        if (seller_sku) {
-          orderMap.set(seller_sku.trim(), { id, title });
-        }
+        if (seller_sku) orderMap.set(seller_sku.trim(), { id, title });
       }
     }
-    offset += orders.length;
+  };
+
+  processPage(firstPage);
+  offset += firstPage.results?.length ?? 0;
+  pages++;
+  console.log("[sync/orders] page 0 orders fetched:", firstPage.results?.length ?? 0, "total:", firstPage.paging?.total);
+  if ((firstPage.results?.length ?? 0) > 0) {
+    console.log("[sync/orders] sample seller_sku:", firstPage.results[0]?.order_items?.[0]?.item?.seller_sku);
+  }
+
+  while (pages < MAX_PAGES && offset < (firstPage.paging?.total ?? 0)) {
+    const url = `https://api.mercadolibre.com/orders/search?seller=${tokens.user_id}&limit=${ORDER_LIMIT}&offset=${offset}`;
+    console.log("[sync/orders] fetching page", pages, "url:", url);
+    let search: OrdersSearchResult;
+    try {
+      search = await mlGet<OrdersSearchResult>(
+        `/orders/search?seller=${tokens.user_id}&limit=${ORDER_LIMIT}&offset=${offset}`,
+        tokens.access_token
+      );
+    } catch (err) {
+      console.error("[sync/orders] fetch failed page", pages, String(err));
+      break;
+    }
+    processPage(search);
+    const fetched = search.results?.length ?? 0;
+    console.log("[sync/orders] page", pages, "orders fetched:", fetched);
+    offset += fetched;
     pages++;
-    if (orders.length === 0 || offset >= (search.paging?.total ?? 0)) break;
+    if (fetched === 0) break;
   }
 
   console.log("[sync/orders] orderMap size:", orderMap.size, "orders scanned:", offset);
