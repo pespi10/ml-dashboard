@@ -91,7 +91,7 @@ export interface MLOrder {
   paid_amount: number;
   currency_id: string;
   order_items: {
-    item: { id: string; title: string; category_id: string };
+    item: { id: string; title: string; category_id: string; seller_sku?: string | null };
     quantity: number;
     unit_price: number;
     sale_fee: number;
@@ -148,6 +148,7 @@ export interface DashboardStats {
   stockAlerts: MLItem[];
   profitabilityByItem: ProfitabilityItem[];
   profitabilityByCategory: ProfitabilityCategory[];
+  eanToMlaMap: Record<string, string>;
 }
 
 export interface DashboardOverview {
@@ -592,6 +593,15 @@ export async function getDashboardStats(
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, 5);
 
+  const eanToMlaMap: Record<string, string> = {};
+  orders.forEach((order) => {
+    order.order_items.forEach((oi) => {
+      if (oi.item.seller_sku && oi.item.id) {
+        eanToMlaMap[oi.item.seller_sku] = oi.item.id;
+      }
+    });
+  });
+
   const profByItem = getProfitabilityByItem(orders);
   const profByCategory = getProfitabilityByCategory(orders);
 
@@ -624,6 +634,7 @@ export async function getDashboardStats(
       ...c,
       categoryName: catNameMap[c.categoryId] ?? c.categoryId,
     })),
+    eanToMlaMap,
   };
 }
 

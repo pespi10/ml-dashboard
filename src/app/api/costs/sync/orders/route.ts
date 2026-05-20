@@ -5,8 +5,8 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { upsertProductCosts } from "@/lib/db";
 
 const ML_BASE = "https://api.mercadolibre.com";
-const ORDER_LIMIT = 100;
-const MAX_PAGES = 10;
+const ORDER_LIMIT = 50;
+const MAX_PAGES = 20;
 
 interface OrderItem {
   item: { id: string; seller_sku?: string | null; title: string };
@@ -32,7 +32,7 @@ export async function POST() {
   if (!tokens) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   // 1. Diagnostic fetch — raw request with minimal params
-  const diagUrl = `https://api.mercadolibre.com/orders/search?seller=${tokens.user_id}&limit=100&offset=0`;
+  const diagUrl = `https://api.mercadolibre.com/orders/search?seller=${tokens.user_id}&limit=50&offset=0`;
   console.log("[sync/orders] URL:", diagUrl);
   const diagRes = await fetch(diagUrl, {
     headers: { Authorization: `Bearer ${tokens.access_token}` },
