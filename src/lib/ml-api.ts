@@ -472,17 +472,17 @@ export async function getProfitabilityStats(
 
 // ── Dashboard stats ───────────────────────────────────────────────────
 
-export async function getDashboardOverview(tokens: MLTokens): Promise<DashboardOverview> {
-  const [ordersTotal, orders60Total, activeItems, pausedItems] = await Promise.all([
-    getOrdersTotal(tokens, 30),
-    getOrdersTotal(tokens, 60),
+export async function getDashboardOverview(tokens: MLTokens, days = 30): Promise<DashboardOverview> {
+  const [ordersTotal, ordersDblTotal, activeItems, pausedItems] = await Promise.all([
+    getOrdersTotal(tokens, days),
+    getOrdersTotal(tokens, days * 2),
     getItemsTotalByStatus(tokens, "active"),
     getItemsTotalByStatus(tokens, "paused"),
   ]);
 
   return {
     ordersTotal,
-    ordersPrevTotal: Math.max(0, orders60Total - ordersTotal),
+    ordersPrevTotal: Math.max(0, ordersDblTotal - ordersTotal),
     activeItems,
     pausedItems,
   };

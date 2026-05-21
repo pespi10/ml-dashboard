@@ -35,21 +35,23 @@ export async function GET(request: NextRequest) {
   const section = searchParams.get("section");
   const parsedPage = Number.parseInt(searchParams.get("page") || "1", 10);
   const parsedLimit = Number.parseInt(searchParams.get("limit") || "50", 10);
+  const parsedDays = Number.parseInt(searchParams.get("days") || "30", 10);
   const page = Number.isFinite(parsedPage) ? Math.max(1, parsedPage) : 1;
   const limit = Number.isFinite(parsedLimit)
     ? Math.min(50, Math.max(1, parsedLimit))
     : 50;
+  const days = Number.isFinite(parsedDays) ? Math.max(7, Math.min(90, parsedDays)) : 30;
 
   try {
     let data;
     if (isOverview) {
-      data = await getDashboardOverview(activeTokens);
+      data = await getDashboardOverview(activeTokens, days);
     } else if (section === "sales") {
       data = await getDashboardSalesStats(activeTokens, page, limit);
     } else if (section === "stock") {
       data = await getDashboardStockStats(activeTokens, page, limit);
     } else if (section === "profitability") {
-      data = await getProfitabilityStats(activeTokens);
+      data = await getProfitabilityStats(activeTokens, days);
     } else {
       data = await getDashboardStats(activeTokens, page, limit);
     }
