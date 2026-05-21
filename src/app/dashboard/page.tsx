@@ -24,6 +24,8 @@ type TaxData = {
   enviosRate: number;
 };
 
+type CostRow = { ml_id: string; costo: number };
+
 function LiveDot() {
   return (
     <span style={{
@@ -95,12 +97,13 @@ interface ChannelMetrics {
   shippingNote?: string;
   commissions: number;
   iibb: number;
+  costoProductos: number;
 }
 
 function ChannelCard({ metrics, loading }: { metrics: ChannelMetrics | null; loading: boolean }) {
   if (loading || !metrics) return <Skeleton h={290} />;
 
-  const profit = metrics.revenue - metrics.shipping - metrics.commissions - metrics.iibb;
+  const profit = metrics.revenue - metrics.shipping - metrics.commissions - metrics.iibb - metrics.costoProductos;
   const margin = metrics.revenue > 0 ? (profit / metrics.revenue) * 100 : 0;
   const profColor = profit >= 0 ? "var(--green)" : "var(--red)";
 
@@ -131,6 +134,7 @@ function ChannelCard({ metrics, loading }: { metrics: ChannelMetrics | null; loa
         <Row label="Pedidos" value={metrics.orders.toLocaleString("es-AR")} />
         <Row label="Facturación" value={formatARS(metrics.revenue)} />
         <Row label="Costo envío" value={formatARS(metrics.shipping)} note={metrics.shippingNote} muted />
+        <Row label="Costo productos" value={`−${formatARS(metrics.costoProductos)}`} muted />
         <Row label="Comisiones ML" value={`−${formatARS(metrics.commissions)}`} muted />
         <Row label="IIBB estimado" value={`−${formatARS(metrics.iibb)}`} muted />
         <div style={{ height: "1px", background: "var(--border)", margin: "4px 0" }} />
@@ -149,11 +153,13 @@ export default function DashboardPage() {
   const [taxes, setTaxes] = useState<TaxData | null>(null);
   const [salesStats, setSalesStats] = useState<DashboardSalesStats | null>(null);
   const [stockStats, setStockStats] = useState<DashboardStockStats | null>(null);
+  const [costsData, setCostsData] = useState<CostRow[] | null>(null);
 
   const [overviewLoading, setOverviewLoading] = useState(true);
   const [profLoading, setProfLoading] = useState(true);
   const [shippingLoading, setShippingLoading] = useState(true);
   const [taxLoading, setTaxLoading] = useState(true);
+  const [costsLoading, setCostsLoading] = useState(true);
   const [chartLoading, setChartLoading] = useState(true);
   const [stockLoading, setStockLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -191,6 +197,7 @@ export default function DashboardPage() {
   const fetchStaticData = useCallback(async () => {
     setShippingLoading(true);
     setTaxLoading(true);
+    setCostsLoading(true);
     setChartLoading(true);
     setStockLoading(true);
     await Promise.all([
@@ -200,6 +207,9 @@ export default function DashboardPage() {
       fetch("/api/billing/taxes")
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (d) setTaxes(d); setTaxLoading(false); }),
+      fetch("/api/costs")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (d) setCostsData(d); setCostsLoading(false); }),
       fetch("/api/dashboard?section=sales&page=1&limit=50")
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (d) setSalesStats(d); setChartLoading(false); }),
@@ -217,10 +227,20 @@ export default function DashboardPage() {
     fetchStaticData();
   };
 
-  const channelLoading = overviewLoading || profLoading || shippingLoading || taxLoading;
+  const channelLoading = overviewLoading || profLoading || shippingLoading || taxLoading || costsLoading;
 
   const metrics = (() => {
-    if (!overview || !profItems || !shipping || !taxes) return null;
+    if (!overview || !profItems || !shipping || !taxes || !costsData) return null;
+
+    const costsMap: Record<string, number> = {};
+    for (const c of costsData) costsMap[c.ml_id] = c.costo;
+
+    const itemsWithSales = profItems.filter((i) => i.unitsSold > 0);
+    const totalWithSales = itemsWithSales.length;
+    const withCosto = itemsWithSales.filter((i) => costsMap[i.itemId] !== undefined).length;
+    const costoTotalProductos = itemsWithSales.reduce(
+      (s, i) => s + (costsMap[i.itemId] ?? 0) * i.unitsSold, 0
+    );
 
     const gmv = profItems.reduce((s, i) => s + i.grossRevenue, 0);
     const commTotal = profItems.reduce((s, i) => s + i.totalSaleFees, 0);
@@ -234,16 +254,18 @@ export default function DashboardPage() {
     const shipFlex = ordersFlex * COSTO_FLEX;
     const commFlex = commTotal * sf;
     const iibbFlex = revFlex * (taxes.ventasRate / 100);
+    const costoProductosFlex = costoTotalProductos * sf;
 
     const ordersML = Math.round(orders * sm);
     const revML = gmv * sm;
     const shipML = ordersML * shipping.avgSellerCost * (shipping.pctSellerPays / 100);
     const commML = commTotal * sm;
     const iibbML = revML * ((taxes.ventasRate + taxes.enviosRate) / 100);
+    const costoProductosML = costoTotalProductos * sm;
 
     const totalShip = shipFlex + shipML;
     const totalIibb = iibbFlex + iibbML;
-    const profitTotal = gmv - totalShip - commTotal - totalIibb;
+    const profitTotal = gmv - totalShip - commTotal - totalIibb - costoTotalProductos;
     const marginTotal = gmv > 0 ? (profitTotal / gmv) * 100 : 0;
 
     return {
@@ -257,6 +279,7 @@ export default function DashboardPage() {
         shippingNote: "⚠ estimado",
         commissions: commFlex,
         iibb: iibbFlex,
+        costoProductos: costoProductosFlex,
       } as ChannelMetrics,
       ml: {
         label: "Mercado Envíos",
@@ -267,8 +290,9 @@ export default function DashboardPage() {
         shipping: shipML,
         commissions: commML,
         iibb: iibbML,
+        costoProductos: costoProductosML,
       } as ChannelMetrics,
-      totals: { gmv, commTotal, totalShip, totalIibb, profitTotal, marginTotal, orders },
+      totals: { gmv, commTotal, totalShip, totalIibb, costoTotalProductos, withCosto, totalWithSales, profitTotal, marginTotal, orders },
     };
   })();
 
@@ -445,6 +469,11 @@ export default function DashboardPage() {
                 { label: "Comisiones", value: `−${formatARS(metrics.totals.commTotal)}` },
                 { label: "IIBB estimado", value: `−${formatARS(metrics.totals.totalIibb)}` },
                 {
+                  label: "Costo productos",
+                  value: `−${formatARS(metrics.totals.costoTotalProductos)}`,
+                  sub: `Basado en ${metrics.totals.withCosto} de ${metrics.totals.totalWithSales} productos con costo cargado`,
+                },
+                {
                   label: "Ganancia estimada",
                   value: formatARS(metrics.totals.profitTotal),
                   color: profitTotalColor,
@@ -467,9 +496,10 @@ export default function DashboardPage() {
                   {item.sub && (
                     <p style={{
                       fontSize: "10px",
-                      fontFamily: "var(--font-mono)",
+                      fontFamily: item.color ? "var(--font-mono)" : "var(--font-sans)",
                       color: item.color ?? "var(--text-dim)",
                       marginTop: "2px",
+                      lineHeight: "1.4",
                     }}>{item.sub}</p>
                   )}
                 </div>
