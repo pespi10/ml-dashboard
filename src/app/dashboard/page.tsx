@@ -262,6 +262,7 @@ export default function DashboardPage() {
     const ordersML = Math.round(orders * sm);
     const revML = gmv * sm;
     const shipML = ordersML * shipping.avgSellerCost * (shipping.pctSellerPays / 100);
+    console.log('[overview] pedidosML:', ordersML, 'pctSellerPays:', shipping.pctSellerPays, 'avgSellerCost:', shipping.avgSellerCost, 'costoEnvioML:', shipML);
     const commML = commTotal * sm;
     const iibbML = revML * ((taxes.ventasRate + taxes.enviosRate) / 100);
     const costoProductosML = costoTotalProductos * sm;
