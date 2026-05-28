@@ -9,6 +9,7 @@ import {
   getProfitabilityStats,
   isTokenExpired,
   refreshAccessToken,
+  type OrdersOptions,
 } from "@/lib/ml-api";
 import { buildSessionCookieValue, SESSION_COOKIE_OPTIONS } from "@/lib/session";
 
@@ -42,16 +43,21 @@ export async function GET(request: NextRequest) {
     : 50;
   const days = Number.isFinite(parsedDays) ? Math.max(7, Math.min(90, parsedDays)) : 30;
 
+  const dateFrom = searchParams.get("date_from");
+  const dateTo = searchParams.get("date_to");
+  const ordersOptions: number | OrdersOptions =
+    dateFrom && dateTo ? { date_from: dateFrom, date_to: dateTo } : days;
+
   try {
     let data;
     if (isOverview) {
-      data = await getDashboardOverview(activeTokens, days);
+      data = await getDashboardOverview(activeTokens, ordersOptions);
     } else if (section === "sales") {
-      data = await getDashboardSalesStats(activeTokens, page, limit);
+      data = await getDashboardSalesStats(activeTokens, page, limit, ordersOptions);
     } else if (section === "stock") {
       data = await getDashboardStockStats(activeTokens, page, limit);
     } else if (section === "profitability") {
-      data = await getProfitabilityStats(activeTokens, days);
+      data = await getProfitabilityStats(activeTokens, ordersOptions);
     } else {
       data = await getDashboardStats(activeTokens, page, limit);
     }

@@ -8,8 +8,9 @@ import type {
   DashboardStockStats,
   ProfitabilityItem,
 } from "@/lib/ml-api";
-import { formatARS, pctChange } from "@/lib/ml-api";
+import { formatARS } from "@/lib/ml-api";
 import RevenueChart from "@/components/charts/RevenueChart";
+import DateRangePicker, { defaultDateRange } from "@/components/ui/DateRangePicker";
 
 const COSTO_FLEX = 7_000;
 
@@ -146,7 +147,8 @@ function ChannelCard({ metrics, loading }: { metrics: ChannelMetrics | null; loa
 }
 
 export default function DashboardPage() {
-  const [days, setDays] = useState(30);
+  const [dateFrom, setDateFrom] = useState(() => defaultDateRange().from);
+  const [dateTo, setDateTo] = useState(() => defaultDateRange().to);
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [profItems, setProfItems] = useState<ProfitabilityItem[] | null>(null);
   const [shipping, setShipping] = useState<ShippingData | null>(null);
@@ -165,16 +167,19 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  const fetchPeriodData = useCallback(async (d: number) => {
+  const fetchPeriodData = useCallback(async (from: string, to: string) => {
     setOverviewLoading(true);
     setProfLoading(true);
+    setChartLoading(true);
     setError(null);
+    const q = `date_from=${from}&date_to=${to}`;
     try {
-      const [ovRes, profRes] = await Promise.all([
-        fetch(`/api/dashboard?overview=1&days=${d}`),
-        fetch(`/api/dashboard?section=profitability&days=${d}`),
+      const [ovRes, profRes, chartRes] = await Promise.all([
+        fetch(`/api/dashboard?overview=1&${q}`),
+        fetch(`/api/dashboard?section=profitability&${q}`),
+        fetch(`/api/dashboard?section=sales&page=1&limit=50&${q}`),
       ]);
-      if (ovRes.status === 401 || profRes.status === 401) {
+      if ([ovRes, profRes, chartRes].some((r) => r.status === 401)) {
         window.location.href = "/login";
         return;
       }
@@ -186,11 +191,13 @@ export default function DashboardPage() {
         const prof: { profitabilityByItem: ProfitabilityItem[] } = await profRes.json();
         setProfItems(prof.profitabilityByItem);
       }
+      if (chartRes.ok) setSalesStats(await chartRes.json());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error desconocido");
     } finally {
       setOverviewLoading(false);
       setProfLoading(false);
+      setChartLoading(false);
     }
   }, []);
 
@@ -198,7 +205,6 @@ export default function DashboardPage() {
     setShippingLoading(true);
     setTaxLoading(true);
     setCostsLoading(true);
-    setChartLoading(true);
     setStockLoading(true);
     await Promise.all([
       fetch("/api/shipping")
@@ -210,9 +216,6 @@ export default function DashboardPage() {
       fetch("/api/costs")
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (d) setCostsData(d); setCostsLoading(false); }),
-      fetch("/api/dashboard?section=sales&page=1&limit=50")
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => { if (d) setSalesStats(d); setChartLoading(false); }),
       fetch("/api/dashboard?section=stock&page=1&limit=50")
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (d) setStockStats(d); setStockLoading(false); }),
@@ -220,10 +223,10 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => { fetchStaticData(); }, [fetchStaticData]);
-  useEffect(() => { fetchPeriodData(days); }, [days, fetchPeriodData]);
+  useEffect(() => { fetchPeriodData(dateFrom, dateTo); }, [dateFrom, dateTo, fetchPeriodData]);
 
   const refresh = () => {
-    fetchPeriodData(days);
+    fetchPeriodData(dateFrom, dateTo);
     fetchStaticData();
   };
 
@@ -336,7 +339,6 @@ export default function DashboardPage() {
     );
   }
 
-  const ordersChange = overview ? pctChange(overview.ordersTotal, overview.ordersPrevTotal) : null;
   const profitTotal = metrics?.totals.profitTotal ?? 0;
   const profitTotalColor = profitTotal >= 0 ? "var(--green)" : "var(--red)";
 
@@ -367,40 +369,19 @@ export default function DashboardPage() {
           </p>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          {/* Period selector */}
-          <div style={{
-            display: "flex",
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-            overflow: "hidden",
-          }}>
-            {([7, 15, 30] as const).map((d) => (
-              <button
-                key={d}
-                onClick={() => setDays(d)}
-                style={{
-                  padding: "6px 14px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "12px",
-                  fontWeight: days === d ? 700 : 400,
-                  border: "none",
-                  borderRight: d !== 30 ? "1px solid var(--border)" : "none",
-                  background: days === d ? "var(--yellow)" : "transparent",
-                  color: days === d ? "#000" : "var(--text-muted)",
-                  cursor: "pointer",
-                }}
-              >{d}d</button>
-            ))}
-          </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <DateRangePicker
+            dateFrom={dateFrom}
+            dateTo={dateTo}
+            onChange={(from, to) => { setDateFrom(from); setDateTo(to); }}
+          />
           <button
             onClick={refresh}
             style={{
               background: "var(--surface)",
               border: "1px solid var(--border)",
               borderRadius: "var(--radius)",
-              padding: "6px 14px",
+              padding: "5px 12px",
               color: "var(--text-muted)",
               fontFamily: "var(--font-mono)",
               fontSize: "12px",
@@ -442,20 +423,15 @@ export default function DashboardPage() {
               marginBottom: "20px", flexWrap: "wrap", gap: "8px",
             }}>
               <span style={{ fontFamily: "var(--font-display)", fontSize: "14px", fontWeight: "700" }}>
-                Totales — últimos {days} días
+                Totales
               </span>
-              {ordersChange !== null && (
-                <span style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "11px",
-                  color: ordersChange >= 0 ? "var(--green)" : "var(--red)",
-                  background: ordersChange >= 0 ? "rgba(0,255,136,0.08)" : "rgba(255,68,88,0.08)",
-                  padding: "2px 8px",
-                  borderRadius: "20px",
-                }}>
-                  {ordersChange >= 0 ? "+" : ""}{ordersChange.toFixed(1)}% vs período ant.
-                </span>
-              )}
+              <span style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "11px",
+                color: "var(--text-dim)",
+              }}>
+                {dateFrom} → {dateTo}
+              </span>
             </div>
             <div style={{
               display: "grid",

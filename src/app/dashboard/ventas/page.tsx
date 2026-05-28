@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from "react";
 import { formatARS } from "@/lib/ml-api";
+import DateRangePicker, { defaultDateRange } from "@/components/ui/DateRangePicker";
 
 interface OrderItem {
   item: { id: string; title: string };
@@ -34,6 +35,8 @@ const COLS = "64px minmax(160px, 1.6fr) minmax(92px, 0.9fr) minmax(78px, 0.7fr) 
 const ACTIVE_STATUSES = new Set(["paid", "pending", "shipped", "delivered"]);
 
 export default function VentasPage() {
+  const [dateFrom, setDateFrom] = useState(() => defaultDateRange().from);
+  const [dateTo, setDateTo] = useState(() => defaultDateRange().to);
   const [orders, setOrders] = useState<Order[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -52,7 +55,10 @@ export default function VentasPage() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/sales?page=1&limit=50")
+    setLoading(true);
+    setOrders([]);
+    setPage(1);
+    fetch(`/api/sales?page=1&limit=50&date_from=${dateFrom}&date_to=${dateTo}`)
       .then((r) => r.json())
       .then((data) => {
         setOrders(data.results ?? []);
@@ -61,13 +67,13 @@ export default function VentasPage() {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, []);
+  }, [dateFrom, dateTo]);
 
   const loadMore = () => {
     if (loadingMore || !hasMore) return;
     const nextPage = page + 1;
     setLoadingMore(true);
-    fetch(`/api/sales?page=${nextPage}&limit=50`)
+    fetch(`/api/sales?page=${nextPage}&limit=50&date_from=${dateFrom}&date_to=${dateTo}`)
       .then((r) => r.json())
       .then((data) => {
         setOrders((prev) => [...prev, ...(data.results ?? [])]);
@@ -95,9 +101,17 @@ export default function VentasPage() {
             fontWeight: "800", letterSpacing: "-0.02em", marginBottom: "4px",
           }}>Ventas</h1>
           <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-            Últimos 30 días ·{" "}
-            {loading ? "—" : `Mostrando ${orders.length} de ${total} órdenes`}
+            {dateFrom} → {dateTo} ·{" "}
+            {loading ? "—" : `${orders.length} de ${total} órdenes`}
           </p>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <DateRangePicker
+            dateFrom={dateFrom}
+            dateTo={dateTo}
+            onChange={(from, to) => { setDateFrom(from); setDateTo(to); }}
+          />
         </div>
 
         {/* Tab toggle */}

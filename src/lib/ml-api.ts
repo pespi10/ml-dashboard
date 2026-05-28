@@ -1,7 +1,24 @@
 const ML_BASE = "https://api.mercadolibre.com";
 
 export const SHIPPING_COST_PER_ORDER = 0;
-// Costo fijo de envío por pedido — actualizar cuando se tenga el dato real
+
+export interface OrdersOptions {
+  days?: number;
+  date_from?: string;
+  date_to?: string;
+}
+
+function resolveOrdersDateFilter(options: number | OrdersOptions): string {
+  if (typeof options === "number") {
+    return `order.date_created.from=${new Date(Date.now() - options * 86400_000).toISOString()}`;
+  }
+  if (options.date_from && options.date_to) {
+    const from = options.date_from.length === 10 ? `${options.date_from}T00:00:00.000Z` : options.date_from;
+    const to = options.date_to.length === 10 ? `${options.date_to}T23:59:59.999Z` : options.date_to;
+    return `order.date_created.from=${from}&order.date_created.to=${to}`;
+  }
+  return `order.date_created.from=${new Date(Date.now() - (options.days ?? 30) * 86400_000).toISOString()}`;
+}
 
 export interface MLTokens {
   access_token: string;
@@ -281,10 +298,10 @@ export async function getMyItemsPage(
 
 export async function getOrders(
   tokens: MLTokens,
-  days = 30
+  options: number | OrdersOptions = 30
 ): Promise<MLOrder[]> {
   const userId = tokens.user_id;
-  const from = new Date(Date.now() - days * 86400_000).toISOString();
+  const dateFilter = resolveOrdersDateFilter(options);
   const orders: MLOrder[] = [];
   let offset = 0;
   const limit = 50;
@@ -295,7 +312,7 @@ export async function getOrders(
       results: MLOrder[];
       paging: { total: number };
     }>(
-      `/orders/search?seller=${userId}&order.date_created.from=${from}&limit=${limit}&offset=${offset}&sort=date_desc`,
+      `/orders/search?seller=${userId}&${dateFilter}&limit=${limit}&offset=${offset}&sort=date_desc`,
       tokens
     );
 
@@ -316,13 +333,13 @@ export async function getOrdersPage(
   tokens: MLTokens,
   page: number,
   limit: number,
-  days = 30
+  options: number | OrdersOptions = 30
 ): Promise<{ results: MLOrder[]; total: number; page: number; limit: number }> {
   const userId = tokens.user_id;
-  const from = new Date(Date.now() - days * 86400_000).toISOString();
+  const dateFilter = resolveOrdersDateFilter(options);
   const offset = (page - 1) * limit;
   const data = await mlFetch<{ results: MLOrder[]; paging: { total: number } }>(
-    `/orders/search?seller=${userId}&order.date_created.from=${from}&limit=${limit}&offset=${offset}&sort=date_desc`,
+    `/orders/search?seller=${userId}&${dateFilter}&limit=${limit}&offset=${offset}&sort=date_desc`,
     tokens
   );
   if (page === 1 && data.results.length > 0) {
@@ -331,11 +348,11 @@ export async function getOrdersPage(
   return { results: data.results, total: data.paging.total, page, limit };
 }
 
-async function getOrdersTotal(tokens: MLTokens, days: number): Promise<number> {
+async function getOrdersTotal(tokens: MLTokens, options: number | OrdersOptions): Promise<number> {
   const userId = tokens.user_id;
-  const from = new Date(Date.now() - days * 86400_000).toISOString();
+  const dateFilter = resolveOrdersDateFilter(options);
   const data = await mlFetch<{ results: MLOrder[]; paging: { total: number } }>(
-    `/orders/search?seller=${userId}&order.date_created.from=${from}&limit=1&offset=0&sort=date_desc`,
+    `/orders/search?seller=${userId}&${dateFilter}&limit=1&offset=0&sort=date_desc`,
     tokens
   );
   return data.paging.total;
@@ -451,9 +468,9 @@ async function getCategoryName(categoryId: string, tokens: MLTokens): Promise<st
 
 export async function getProfitabilityStats(
   tokens: MLTokens,
-  days = 30
+  options: number | OrdersOptions = 30
 ): Promise<{ profitabilityByItem: ProfitabilityItem[] }> {
-  const orders = await getOrders(tokens, days);
+  const orders = await getOrders(tokens, options);
   const profByItem = getProfitabilityByItem(orders);
 
   const catIds = Array.from(new Set(profByItem.map((i) => i.categoryId)));
@@ -472,17 +489,25 @@ export async function getProfitabilityStats(
 
 // ── Dashboard stats ───────────────────────────────────────────────────
 
-export async function getDashboardOverview(tokens: MLTokens, days = 30): Promise<DashboardOverview> {
+export async function getDashboardOverview(
+  tokens: MLTokens,
+  options: number | OrdersOptions = 30
+): Promise<DashboardOverview> {
+  const isDateRange = typeof options === "object" && !!options.date_from;
+  const dblDays = isDateRange
+    ? 30
+    : (typeof options === "number" ? options * 2 : (options.days ?? 30) * 2);
+
   const [ordersTotal, ordersDblTotal, activeItems, pausedItems] = await Promise.all([
-    getOrdersTotal(tokens, days),
-    getOrdersTotal(tokens, days * 2),
+    getOrdersTotal(tokens, options),
+    isDateRange ? Promise.resolve(0) : getOrdersTotal(tokens, dblDays),
     getItemsTotalByStatus(tokens, "active"),
     getItemsTotalByStatus(tokens, "paused"),
   ]);
 
   return {
     ordersTotal,
-    ordersPrevTotal: Math.max(0, ordersDblTotal - ordersTotal),
+    ordersPrevTotal: isDateRange ? 0 : Math.max(0, ordersDblTotal - ordersTotal),
     activeItems,
     pausedItems,
   };
@@ -491,9 +516,10 @@ export async function getDashboardOverview(tokens: MLTokens, days = 30): Promise
 export async function getDashboardSalesStats(
   tokens: MLTokens,
   page = 1,
-  limit = 50
+  limit = 50,
+  options: number | OrdersOptions = 30
 ): Promise<DashboardSalesStats> {
-  const { results: orders, total: ordersTotal } = await getOrdersPage(tokens, page, limit, 30);
+  const { results: orders, total: ordersTotal } = await getOrdersPage(tokens, page, limit, options);
   const gmv = orders.reduce((s, o) => s + o.total_amount, 0);
   const avgTicket = orders.length > 0 ? gmv / orders.length : 0;
 

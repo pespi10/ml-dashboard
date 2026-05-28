@@ -1,13 +1,14 @@
 // src/app/dashboard/rentabilidad/page.tsx
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, Cell,
 } from "recharts";
 import { formatARS } from "@/lib/ml-api";
 import type { MLItem } from "@/lib/ml-api";
+import DateRangePicker, { defaultDateRange } from "@/components/ui/DateRangePicker";
 
 // ── Commission rates ───────────────────────────────────────────────────
 const ML_COMMISSION: Record<string, number> = {
@@ -204,11 +205,15 @@ function marginColor(m: number | null): string {
 
 export default function RentabilidadPage() {
   // ── Data state ─────────────────────────────────────────
+  const [dateFrom, setDateFrom] = useState(() => defaultDateRange().from);
+  const [dateTo, setDateTo] = useState(() => defaultDateRange().to);
   const [activeItems, setActiveItems] = useState<MLItem[]>([]);
   const [profitMap, setProfitMap] = useState<Record<string, ProfitItem>>({});
   const [costs, setCosts] = useState<Record<string, { costo: number; precioLista: number | null }>>({});
   const [taxData, setTaxData] = useState<TaxData | null>(null);
   const [shippingData, setShippingData] = useState<ShippingData | null>(null);
+  const [staticLoaded, setStaticLoaded] = useState(false);
+  const [profLoading, setProfLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -224,46 +229,50 @@ export default function RentabilidadPage() {
     mlFeePercent: 13, shippingCost: 0, otherCosts: 0, quantity: 1,
   });
 
-  // ── Fetch ──────────────────────────────────────────────
+  // ── Static fetch (once) ────────────────────────────────
   useEffect(() => {
-    // Non-blocking shipping
     fetch("/api/shipping")
       .then(r => r.ok ? r.json() as Promise<ShippingData> : null)
       .then(d => { if (d && !("error" in (d as object))) setShippingData(d); })
       .catch(() => {});
 
-    const productsFetch = fetch("/api/products")
-      .then(r => r.json())
-      .then(d => (d.active as MLItem[]) ?? []);
-
-    const profitFetch = fetch("/api/dashboard?section=profitability")
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<DashboardData>; });
-
-    const taxFetch = fetch("/api/billing/taxes")
-      .then(r => r.ok ? r.json() as Promise<TaxData> : null)
-      .catch(() => null);
-
-    const costsFetch = fetch("/api/costs")
-      .then(r => r.ok ? r.json() : [])
-      .catch(() => []) as Promise<Array<{ ml_id: string; costo: number; precio_lista?: number | null }>>;
-
-    Promise.all([productsFetch, profitFetch, taxFetch, costsFetch])
-      .then(([items, profitData, taxes, dbCosts]) => {
-        setActiveItems(items);
-
-        const pm: Record<string, ProfitItem> = {};
-        for (const pi of profitData.profitabilityByItem ?? []) pm[pi.itemId] = pi;
-        setProfitMap(pm);
-
-        const cm: Record<string, { costo: number; precioLista: number | null }> = {};
-        for (const c of dbCosts) cm[c.ml_id] = { costo: c.costo, precioLista: c.precio_lista ?? null };
-        setCosts(cm);
-
-        if (taxes && !("error" in (taxes as object))) setTaxData(taxes);
-        setLoading(false);
-      })
-      .catch((e: Error) => { setFetchError(e.message); setLoading(false); });
+    Promise.all([
+      fetch("/api/products").then(r => r.json()).then(d => (d.active as MLItem[]) ?? []),
+      fetch("/api/billing/taxes").then(r => r.ok ? r.json() as Promise<TaxData> : null).catch(() => null),
+      fetch("/api/costs").then(r => r.ok ? r.json() : []).catch(() => []) as
+        Promise<Array<{ ml_id: string; costo: number; precio_lista?: number | null }>>,
+    ]).then(([items, taxes, dbCosts]) => {
+      setActiveItems(items);
+      const cm: Record<string, { costo: number; precioLista: number | null }> = {};
+      for (const c of dbCosts) cm[c.ml_id] = { costo: c.costo, precioLista: c.precio_lista ?? null };
+      setCosts(cm);
+      if (taxes && !("error" in (taxes as object))) setTaxData(taxes);
+      setStaticLoaded(true);
+    }).catch((e: Error) => { setFetchError(e.message); setLoading(false); });
   }, []);
+
+  // ── Period fetch (reruns on date change) ───────────────
+  const fetchProfit = useCallback(async (from: string, to: string) => {
+    setProfLoading(true);
+    try {
+      const r = await fetch(`/api/dashboard?section=profitability&date_from=${from}&date_to=${to}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data: DashboardData = await r.json();
+      const pm: Record<string, ProfitItem> = {};
+      for (const pi of data.profitabilityByItem ?? []) pm[pi.itemId] = pi;
+      setProfitMap(pm);
+    } catch (e: unknown) {
+      setFetchError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProfLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchProfit(dateFrom, dateTo); }, [dateFrom, dateTo, fetchProfit]);
+
+  useEffect(() => {
+    if (staticLoaded && !profLoading) setLoading(false);
+  }, [staticLoaded, profLoading]);
 
   // ── Global weighted shipping rate ──────────────────────
   const shippingRate = useMemo(() => {
@@ -466,16 +475,23 @@ export default function RentabilidadPage() {
     <div style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
 
       {/* ── Header ─────────────────────────────────────── */}
-      <div>
-        <h1 style={{
-          fontFamily: "var(--font-display)", fontSize: "clamp(22px, 4vw, 28px)",
-          fontWeight: "800", letterSpacing: "-0.02em", marginBottom: "4px",
-        }}>
-          Rentabilidad
-        </h1>
-        <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-          Análisis de márgenes por publicación activa
-        </p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px" }}>
+        <div>
+          <h1 style={{
+            fontFamily: "var(--font-display)", fontSize: "clamp(22px, 4vw, 28px)",
+            fontWeight: "800", letterSpacing: "-0.02em", marginBottom: "4px",
+          }}>
+            Rentabilidad
+          </h1>
+          <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+            {profLoading ? "Cargando ventas…" : `Período: ${dateFrom} → ${dateTo}`}
+          </p>
+        </div>
+        <DateRangePicker
+          dateFrom={dateFrom}
+          dateTo={dateTo}
+          onChange={(from, to) => { setDateFrom(from); setDateTo(to); }}
+        />
       </div>
 
       {/* ── SECCIÓN 1: Rentabilidad por producto ─────── */}
