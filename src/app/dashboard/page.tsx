@@ -1,7 +1,7 @@
 // src/app/dashboard/page.tsx
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import type {
   DashboardOverview,
   DashboardSalesStats,
@@ -146,6 +146,189 @@ function ChannelCard({ metrics, loading }: { metrics: ChannelMetrics | null; loa
   );
 }
 
+// ── Sync modal ───────────────────────────────────────────────────────────
+
+interface SyncLog {
+  id: number;
+  synced_at: string;
+  date_from: string;
+  date_to: string;
+  orders_count: number;
+  shipments_count: number;
+  duration_ms: number;
+  status: string;
+}
+
+function timeAgo(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor(ms / 60_000);
+  if (h >= 24) return `hace ${Math.floor(h / 24)}d`;
+  if (h > 0) return `hace ${h}h`;
+  if (m > 0) return `hace ${m}min`;
+  return "hace un momento";
+}
+
+function SyncModal({
+  onClose,
+  onDone,
+}: {
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const defaults = defaultDateRange();
+  const [from, setFrom] = useState(defaults.from);
+  const [to, setTo] = useState(defaults.to);
+  const [phase, setPhase] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [step, setStep] = useState("");
+  const [result, setResult] = useState<{ orders_synced: number; shipments_synced: number; duration_ms: number } | null>(null);
+  const [errMsg, setErrMsg] = useState("");
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const clear = () => timers.current.forEach(clearTimeout);
+
+  const run = async () => {
+    setPhase("running");
+    setStep("Sincronizando órdenes…");
+    timers.current.push(setTimeout(() => setStep("Sincronizando envíos…"), 8_000));
+    timers.current.push(setTimeout(() => setStep("Procesando percepciones IIBB…"), 25_000));
+    try {
+      const res = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date_from: from, date_to: to }),
+      });
+      clear();
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setResult(data);
+      setPhase("done");
+      onDone();
+    } catch (e) {
+      clear();
+      setErrMsg(e instanceof Error ? e.message : "Error desconocido");
+      setPhase("error");
+    }
+  };
+
+  const today = new Date().toISOString().split("T")[0];
+  const inputStyle: React.CSSProperties = {
+    background: "var(--surface)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius)",
+    padding: "5px 10px",
+    color: "var(--text)",
+    fontFamily: "var(--font-mono)",
+    fontSize: "12px",
+    colorScheme: "dark",
+  };
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      style={{
+        position: "fixed", inset: 0,
+        background: "rgba(0,0,0,0.65)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 1000, padding: "16px",
+      }}
+    >
+      <div style={{
+        background: "var(--surface)",
+        border: "1px solid var(--border)",
+        borderRadius: "var(--radius-lg)",
+        padding: "28px",
+        width: "100%", maxWidth: "420px",
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
+          <span style={{ fontFamily: "var(--font-display)", fontSize: "16px", fontWeight: "700" }}>
+            Sincronizar datos
+          </span>
+          <button onClick={onClose} style={{
+            background: "none", border: "none", color: "var(--text-muted)",
+            fontSize: "18px", cursor: "pointer", lineHeight: 1,
+          }}>×</button>
+        </div>
+
+        {/* Date pickers */}
+        <div style={{ marginBottom: "20px" }}>
+          <p style={{ fontSize: "11px", color: "var(--text-dim)", marginBottom: "8px", fontFamily: "var(--font-mono)" }}>
+            PERÍODO A SINCRONIZAR
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <input type="date" value={from} max={to || today} onChange={(e) => e.target.value && setFrom(e.target.value)} style={inputStyle} />
+            <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>→</span>
+            <input type="date" value={to} min={from} max={today} onChange={(e) => e.target.value && setTo(e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+
+        {/* Status */}
+        {phase === "running" && (
+          <div style={{
+            padding: "12px 16px", marginBottom: "16px",
+            background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius)",
+            fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--yellow)",
+            display: "flex", alignItems: "center", gap: "8px",
+          }}>
+            <span style={{ animation: "spin 1s linear infinite", display: "inline-block" }}>⟳</span>
+            {step}
+          </div>
+        )}
+
+        {phase === "done" && result && (
+          <div style={{
+            padding: "12px 16px", marginBottom: "16px",
+            background: "rgba(0,255,136,0.06)", border: "1px solid rgba(0,255,136,0.2)", borderRadius: "var(--radius)",
+            fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--green)",
+          }}>
+            ✓ {result.orders_synced.toLocaleString("es-AR")} órdenes · {result.shipments_synced.toLocaleString("es-AR")} envíos
+            <span style={{ color: "var(--text-dim)", marginLeft: "8px" }}>
+              ({Math.round(result.duration_ms / 1000)}s)
+            </span>
+          </div>
+        )}
+
+        {phase === "error" && (
+          <div style={{
+            padding: "12px 16px", marginBottom: "16px",
+            background: "rgba(255,68,88,0.08)", border: "1px solid rgba(255,68,88,0.25)", borderRadius: "var(--radius)",
+            fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--red)",
+          }}>
+            ✗ {errMsg}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={{
+            background: "transparent", border: "1px solid var(--border)",
+            borderRadius: "var(--radius)", padding: "8px 16px",
+            color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: "12px", cursor: "pointer",
+          }}>Cerrar</button>
+          {phase !== "done" && (
+            <button
+              onClick={run}
+              disabled={phase === "running"}
+              style={{
+                background: phase === "running" ? "var(--border)" : "var(--yellow)",
+                color: phase === "running" ? "var(--text-dim)" : "#000",
+                border: "none", borderRadius: "var(--radius)",
+                padding: "8px 20px",
+                fontFamily: "var(--font-display)", fontWeight: "700", fontSize: "12px",
+                cursor: phase === "running" ? "not-allowed" : "pointer",
+              }}
+            >
+              {phase === "running" ? "Sincronizando…" : "Sincronizar"}
+            </button>
+          )}
+        </div>
+      </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const [dateFrom, setDateFrom] = useState(() => defaultDateRange().from);
   const [dateTo, setDateTo] = useState(() => defaultDateRange().to);
@@ -166,6 +349,8 @@ export default function DashboardPage() {
   const [stockLoading, setStockLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const [lastSync, setLastSync] = useState<SyncLog | null>(null);
 
   const fetchPeriodData = useCallback(async (from: string, to: string) => {
     setOverviewLoading(true);
@@ -224,6 +409,12 @@ export default function DashboardPage() {
 
   useEffect(() => { fetchStaticData(); }, [fetchStaticData]);
   useEffect(() => { fetchPeriodData(dateFrom, dateTo); }, [dateFrom, dateTo, fetchPeriodData]);
+  useEffect(() => {
+    fetch("/api/sync/status")
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d) setLastSync(d); })
+      .catch(() => {});
+  }, []);
 
   const refresh = () => {
     fetchPeriodData(dateFrom, dateTo);
@@ -344,6 +535,7 @@ export default function DashboardPage() {
   const profitTotalColor = profitTotal >= 0 ? "var(--green)" : "var(--red)";
 
   return (
+    <>
     <div>
       {/* Header */}
       <div style={{
@@ -368,6 +560,11 @@ export default function DashboardPage() {
               ? `Actualizado ${lastUpdate.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}`
               : "—"}
           </p>
+          {lastSync && (
+            <p style={{ fontSize: "11px", color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginTop: "2px" }}>
+              Última sync: {timeAgo(lastSync.synced_at)} · {lastSync.orders_count.toLocaleString("es-AR")} órdenes
+            </p>
+          )}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
@@ -389,6 +586,20 @@ export default function DashboardPage() {
               cursor: "pointer",
             }}
           >↻</button>
+          <button
+            onClick={() => setSyncModalOpen(true)}
+            style={{
+              background: "var(--yellow)",
+              color: "#000",
+              border: "none",
+              borderRadius: "var(--radius)",
+              padding: "5px 14px",
+              fontFamily: "var(--font-display)",
+              fontWeight: "700",
+              fontSize: "12px",
+              cursor: "pointer",
+            }}
+          >↻ Sincronizar</button>
         </div>
       </div>
 
@@ -613,5 +824,20 @@ export default function DashboardPage() {
         </div>
       </div>
     </div>
+
+    {syncModalOpen && (
+      <SyncModal
+        onClose={() => setSyncModalOpen(false)}
+        onDone={() => {
+          fetch("/api/sync/status")
+            .then((r) => r.ok ? r.json() : null)
+            .then((d) => { if (d) setLastSync(d); })
+            .catch(() => {});
+          fetchPeriodData(dateFrom, dateTo);
+          fetchStaticData();
+        }}
+      />
+    )}
+    </>
   );
 }

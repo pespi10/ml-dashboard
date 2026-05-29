@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { isTokenExpired, refreshAccessToken } from "@/lib/ml-api";
+import { supabaseAdmin } from "@/lib/supabase";
 
 const ML_BASE = "https://api.mercadolibre.com";
 
@@ -94,8 +95,29 @@ export async function GET() {
     }
   }
 
-  // Always use previous month; fall back to 2 months ago if empty
+  // ── Try DB first ────────────────────────────────────────────────────────
   let period = monthKey(1);
+  const { data: dbPerceptions } = await supabaseAdmin
+    .from("billing_perceptions")
+    .select("society, tax_type, amount, taxable_amount, aliquot")
+    .eq("period", period);
+
+  if (dbPerceptions && dbPerceptions.length > 0) {
+    const summary = dbPerceptions as MLPerception[];
+    const ventasPerceptions = summary.filter((p) => p.society === "ML");
+    const enviosPerceptions = summary.filter((p) => p.society === "MCA");
+    const { total: ventasTotal, taxable: ventasTaxable, rate: ventasRate } = calcRate(ventasPerceptions, summary);
+    const { total: enviosTotal, taxable: enviosTaxable, rate: enviosRate } = calcRate(enviosPerceptions, summary);
+    return NextResponse.json({
+      period, ventasRate, enviosRate, combinedRate: ventasRate + enviosRate,
+      iibbVentas: { total: ventasTotal, taxable: ventasTaxable, rate: ventasRate, count: ventasPerceptions.length },
+      iibbEnvios: { total: enviosTotal, taxable: enviosTaxable, rate: enviosRate, count: enviosPerceptions.length },
+      source: "db",
+    });
+  }
+
+  // ── Fall back to ML API ─────────────────────────────────────────────────
+  // Always use previous month; fall back to 2 months ago if empty
   console.log("[billing/taxes] trying period:", period);
 
   let raw = await mlGet<MLPerceptionsResponse>(
