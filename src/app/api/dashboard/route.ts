@@ -41,7 +41,7 @@ function profitabilityFromDB(rows: DBOrderRow[]): ProfitabilityItem[] {
       unitsSold: 0, grossRevenue: 0, totalSaleFees: 0,
     };
     map[id].unitsSold += r.quantity ?? 1;
-    map[id].grossRevenue += (r.unit_price ?? 0) * (r.quantity ?? 1);
+    map[id].grossRevenue += r.total_amount ?? 0;
     map[id].totalSaleFees += r.sale_fee ?? 0;
   }
   return Object.entries(map).map(([itemId, v]) => ({
@@ -79,7 +79,7 @@ function salesStatsFromDB(rows: DBOrderRow[], page: number, limit: number) {
     const id = r.item_id ?? "unknown";
     if (!itemRev[id]) itemRev[id] = { title: r.item_title ?? id, sold: 0, revenue: 0 };
     itemRev[id].sold += r.quantity ?? 1;
-    itemRev[id].revenue += (r.unit_price ?? 0) * (r.quantity ?? 1);
+    itemRev[id].revenue += r.total_amount ?? 0;
   }
   const topItems = Object.entries(itemRev)
     .map(([id, v]) => ({ id, ...v }))

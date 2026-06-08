@@ -3,6 +3,11 @@
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS logistic_type text;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipment_mode text;
 
+-- Agregar conteos de logística al log de sync:
+ALTER TABLE sync_log ADD COLUMN IF NOT EXISTS flex_count    int DEFAULT 0;
+ALTER TABLE sync_log ADD COLUMN IF NOT EXISTS colecta_count int DEFAULT 0;
+ALTER TABLE sync_log ADD COLUMN IF NOT EXISTS unknown_count int DEFAULT 0;
+
 -- ─────────────────────────────────────────────────────────────
 
 -- Órdenes sincronizadas desde MercadoLibre

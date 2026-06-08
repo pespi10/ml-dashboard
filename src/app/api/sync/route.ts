@@ -93,10 +93,11 @@ export async function POST(request: NextRequest) {
   const dateFrom = `${dateFromStr}T00:00:00.000Z`;
   const dateTo   = `${dateToStr}T23:59:59.999Z`;
 
-  // ── 1. Fetch all orders (paginated, deduplicated) ──────────────────────
+  // ── 1. Fetch all orders (paginated, deduplicated by order.id) ─────────
   const allOrders: RawOrder[] = [];
   const seenIds = new Set<number>();
   let offset = 0;
+  let rawCount = 0;
 
   while (true) {
     const page = await mlGet<{ results: RawOrder[]; paging: { total: number } }>(
@@ -104,12 +105,14 @@ export async function POST(request: NextRequest) {
       accessToken
     );
     if (!page || !page.results.length) break;
+    rawCount += page.results.length;
     for (const o of page.results) {
       if (!seenIds.has(o.id)) { seenIds.add(o.id); allOrders.push(o); }
     }
     offset += 50;
     if (offset >= page.paging.total || page.results.length < 50) break;
   }
+  console.log('[sync] orders before dedup:', rawCount, 'after dedup:', allOrders.length);
 
   // ── 2. Fetch shipment details (logistic_type, mode, seller_cost) ───────
   // Build shipId → orderId map first
@@ -163,14 +166,21 @@ export async function POST(request: NextRequest) {
   }
 
   // Logistic_type breakdown
-  const breakdown: Record<string, number> = { self_service: 0, cross_docking: 0, xd_drop_off: 0, other: 0, null: 0 };
+  const breakdown: Record<string, number> = {
+    self_service: 0, xd_drop_off: 0,           // flex
+    cross_docking: 0, fulfillment: 0, drop_off: 0, // colecta
+    other: 0, null: 0,
+  };
   for (const d of Array.from(shipDataMap.values())) {
     const lt = d.logistic_type;
     if (lt === null) breakdown["null"]++;
     else if (lt in breakdown) breakdown[lt]++;
     else breakdown["other"]++;
   }
-  console.log('[sync] logistic_type breakdown:', breakdown);
+  const flexCount    = breakdown.self_service + breakdown.xd_drop_off;
+  const colectaCount = breakdown.cross_docking + breakdown.fulfillment + breakdown.drop_off;
+  const unknownCount = breakdown.null + breakdown.other;
+  console.log('[sync] logistic_type breakdown:', { ...breakdown, flex_count: flexCount, colecta_count: colectaCount, unknown_count: unknownCount });
 
   // ── 3. Build and upsert orders (includes logistic_type + shipment_mode) ─
   const orderRows = allOrders.map((o) => {
@@ -255,6 +265,9 @@ export async function POST(request: NextRequest) {
     orders_count: allOrders.length,
     shipments_count: shipmentRows.length,
     perceptions_count: perceptionsCount,
+    flex_count: flexCount,
+    colecta_count: colectaCount,
+    unknown_count: unknownCount,
     duration_ms: durationMs,
     status: ordersUpsertError ? "partial" : "ok",
     error: ordersUpsertError,
@@ -264,6 +277,9 @@ export async function POST(request: NextRequest) {
     orders_synced: allOrders.length,
     shipments_synced: shipmentRows.length,
     perceptions_synced: perceptionsCount,
+    flex_count: flexCount,
+    colecta_count: colectaCount,
+    unknown_count: unknownCount,
     duration_ms: durationMs,
   });
 
