@@ -98,21 +98,44 @@ export async function POST(request: NextRequest) {
   const seenIds = new Set<number>();
   let offset = 0;
   let rawCount = 0;
+  let mlTotal = 0;
+  let pageNum = 0;
 
   while (true) {
-    const page = await mlGet<{ results: RawOrder[]; paging: { total: number } }>(
-      `/orders/search?seller=${tokens.user_id}&order.date_created.from=${dateFrom}&order.date_created.to=${dateTo}&limit=50&offset=${offset}&sort=date_desc`,
-      accessToken
-    );
-    if (!page || !page.results.length) break;
-    rawCount += page.results.length;
-    for (const o of page.results) {
+    pageNum++;
+    // Retry up to 3 times on transient ML errors before skipping the page
+    let page: { results: RawOrder[]; paging: { total: number } } | null = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      page = await mlGet<{ results: RawOrder[]; paging: { total: number } }>(
+        `/orders/search?seller=${tokens.user_id}&order.date_created.from=${dateFrom}&order.date_created.to=${dateTo}&limit=50&offset=${offset}&sort=date_desc`,
+        accessToken
+      );
+      if (page) break;
+      console.log(`[sync] page ${pageNum} attempt ${attempt} failed, retrying in 1s…`);
+      await sleep(1000);
+    }
+
+    if (!page) {
+      console.log(`[sync] page ${pageNum} offset ${offset} — all retries failed, stopping pagination`);
+      break;
+    }
+
+    if (mlTotal === 0 && page.paging.total > 0) mlTotal = page.paging.total;
+
+    const pageOrders = page.results;
+    rawCount += pageOrders.length;
+    for (const o of pageOrders) {
       if (!seenIds.has(o.id)) { seenIds.add(o.id); allOrders.push(o); }
     }
+
+    console.log(`[sync] page ${pageNum} offset ${offset} fetched: ${pageOrders.length} | total so far: ${allOrders.length} / ${mlTotal}`);
+
+    if (pageOrders.length < 50) break;   // last (partial) page
     offset += 50;
-    if (offset >= page.paging.total || page.results.length < 50) break;
+    if (offset >= mlTotal) break;        // fetched everything
+    await sleep(100);                    // avoid ML rate-limit between pages
   }
-  console.log('[sync] orders before dedup:', rawCount, 'after dedup:', allOrders.length);
+  console.log('[sync] orders before dedup:', rawCount, 'after dedup:', allOrders.length, '| ML reported total:', mlTotal);
 
   // ── 2. Fetch shipment details (logistic_type, mode, seller_cost) ───────
   // Build shipId → orderId map first
@@ -206,12 +229,15 @@ export async function POST(request: NextRequest) {
   });
 
   let ordersUpsertError: string | null = null;
+  let savedCount = 0;
   for (let i = 0; i < orderRows.length; i += 100) {
     const { error } = await supabaseAdmin
       .from("orders")
       .upsert(orderRows.slice(i, i + 100), { onConflict: "id" });
     if (error) { console.error("[sync] orders upsert error:", error); ordersUpsertError = error.message; }
+    else savedCount += Math.min(100, orderRows.length - i);
   }
+  console.log('[sync] FINAL total orders saved:', savedCount, '| expected from ML:', mlTotal);
 
   // ── 4. Upsert shipments ────────────────────────────────────────────────
   if (shipmentRows.length > 0) {

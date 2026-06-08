@@ -82,35 +82,45 @@ export async function GET() {
     .not("shipment_id", "is", null);
 
   if (count && count > 0 && ordersWithLogistic) {
+    console.log('[shipping] source: db | total orders with shipment_id:', count);
+
     const { data: shipCosts } = await supabaseAdmin
       .from("shipments")
       .select("order_id, seller_cost");
 
-    // Log logistic_type breakdown from DB
+    const typedOrders = ordersWithLogistic as { id: number; logistic_type: string | null; total_amount: number }[];
+
+    // Logistic_type breakdown and unique values
     const ltBreakdown: Record<string, number> = {};
-    for (const o of (ordersWithLogistic as { logistic_type: string | null }[])) {
+    for (const o of typedOrders) {
       const lt = o.logistic_type ?? "null";
       ltBreakdown[lt] = (ltBreakdown[lt] ?? 0) + 1;
     }
+    const uniqueTypes = Object.keys(ltBreakdown).sort();
+    const flexCount    = (ltBreakdown["self_service"] ?? 0) + (ltBreakdown["xd_drop_off"] ?? 0);
+    const colectaCount = (ltBreakdown["cross_docking"] ?? 0) + (ltBreakdown["fulfillment"] ?? 0) + (ltBreakdown["drop_off"] ?? 0);
+
+    console.log('[shipping] flex count from DB:', flexCount);
+    console.log('[shipping] colecta count from DB:', colectaCount);
+    console.log('[shipping] logistic_type values found:', uniqueTypes);
     console.log('[shipping] DB logistic_type breakdown:', ltBreakdown);
 
     const costByOrderId = new Map<number, number>();
     for (const s of (shipCosts ?? [])) costByOrderId.set(s.order_id as number, s.seller_cost as number ?? 0);
 
-    const results = (ordersWithLogistic as { id: number; logistic_type: string | null; total_amount: number }[])
-      .map((o) => ({
-        isFlex: isFlexLogistic(o.logistic_type),
-        senderCost: costByOrderId.get(o.id) ?? 0,
-        receiverCost: 0,
-      }));
+    const results = typedOrders.map((o) => ({
+      isFlex: isFlexLogistic(o.logistic_type),
+      senderCost: costByOrderId.get(o.id) ?? 0,
+      receiverCost: 0,
+    }));
 
-    const revenues = (ordersWithLogistic as { total_amount: number }[])
-      .map((o) => o.total_amount ?? 0).filter((v) => v > 0);
+    const revenues = typedOrders.map((o) => o.total_amount ?? 0).filter((v) => v > 0);
 
     return NextResponse.json({ ...buildShippingResponse(results, revenues), source: "db" });
   }
 
   // ── Fall back to ML API (uses logistic_type from shipment, not zip_code) ─
+  console.log('[shipping] source: ml (no DB data found)');
   interface OrderWithShipping { id: number; total_amount?: number; shipping?: { id?: number } | null }
   const orders: OrderWithShipping[] = [];
   for (let offset = 0; offset < 200; offset += 50) {

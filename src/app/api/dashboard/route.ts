@@ -26,6 +26,7 @@ interface DBOrderRow {
   sale_fee: number;
   date_created: string;
   total_amount: number;
+  logistic_type: string | null;
 }
 
 function profitabilityFromDB(rows: DBOrderRow[]): ProfitabilityItem[] {
@@ -92,14 +93,37 @@ function salesStatsFromDB(rows: DBOrderRow[], page: number, limit: number) {
 async function queryDBOrders(fromStr: string, toStr: string): Promise<DBOrderRow[] | null> {
   const { data, error, count } = await supabaseAdmin
     .from("orders")
-    .select("item_id, item_title, category_id, quantity, unit_price, sale_fee, date_created, total_amount", {
+    .select("item_id, item_title, category_id, quantity, unit_price, sale_fee, date_created, total_amount, logistic_type", {
       count: "exact",
     })
     .gte("date_created", `${fromStr}T00:00:00.000Z`)
     .lte("date_created", `${toStr}T23:59:59.999Z`);
 
-  if (error || !count) return null;
-  return data as DBOrderRow[];
+  console.log('[dashboard] orders from DB:', count, '| error:', error?.message ?? null);
+  if (error || !count || !data) return null;
+
+  const rows = data as DBOrderRow[];
+
+  console.log('[dashboard] sum total_amount:', rows.reduce((s, o) => s + (o.total_amount ?? 0), 0));
+  console.log('[dashboard] sample order:', JSON.stringify(rows[0] ?? null));
+
+  // Flex / Colecta breakdown
+  const ltBreakdown: Record<string, number> = {};
+  for (const r of rows) {
+    const lt = r.logistic_type ?? "null";
+    ltBreakdown[lt] = (ltBreakdown[lt] ?? 0) + 1;
+  }
+  const flexCount    = (ltBreakdown["self_service"] ?? 0) + (ltBreakdown["xd_drop_off"] ?? 0);
+  const colectaCount = (ltBreakdown["cross_docking"] ?? 0) + (ltBreakdown["fulfillment"] ?? 0) + (ltBreakdown["drop_off"] ?? 0);
+  const unknownCount = (ltBreakdown["null"] ?? 0) + Object.entries(ltBreakdown)
+    .filter(([k]) => !["self_service","xd_drop_off","cross_docking","fulfillment","drop_off","null"].includes(k))
+    .reduce((s, [, v]) => s + v, 0);
+  console.log('[dashboard] flex orders:', flexCount);
+  console.log('[dashboard] colecta orders:', colectaCount);
+  console.log('[dashboard] unknown logistic_type orders:', unknownCount);
+  console.log('[dashboard] logistic_type breakdown:', ltBreakdown);
+
+  return rows;
 }
 
 // ── Route ─────────────────────────────────────────────────────────────────
