@@ -125,6 +125,7 @@ export async function POST(request: NextRequest) {
 
   const shipIds = Array.from(shipIdToOrderId.keys());
   const shipmentRows: { id: number; order_id: number; seller_cost: number; is_flex: boolean }[] = [];
+  let samplesLogged = 0;
 
   for (let i = 0; i < shipIds.length; i += 20) {
     const batch = shipIds.slice(i, i + 20);
@@ -135,19 +136,41 @@ export async function POST(request: NextRequest) {
           mlGet<{ senders?: Array<{ cost?: number }> }>(`/shipments/${shipId}/costs`, accessToken),
         ]);
         const logisticType = shipment?.logistic_type ?? null;
+        const isFlex = isFlexLogistic(logisticType);
         const data: ShipData = {
           logistic_type: logisticType,
           mode: shipment?.mode ?? null,
           seller_cost: costs?.senders?.[0]?.cost ?? 0,
-          is_flex: isFlexLogistic(logisticType),
+          is_flex: isFlex,
         };
         shipDataMap.set(shipId, data);
-        return { id: shipId, order_id: shipIdToOrderId.get(shipId)!, seller_cost: data.seller_cost, is_flex: data.is_flex };
+
+        if (samplesLogged < 5) {
+          console.log('[sync] shipment sample:', {
+            id: shipment?.id ?? shipId,
+            logistic_type: shipment?.logistic_type ?? null,
+            mode: shipment?.mode ?? null,
+            is_flex: isFlex,
+          });
+          samplesLogged++;
+        }
+
+        return { id: shipId, order_id: shipIdToOrderId.get(shipId)!, seller_cost: data.seller_cost, is_flex: isFlex };
       })
     );
     shipmentRows.push(...results);
     if (i + 20 < shipIds.length) await sleep(200);
   }
+
+  // Logistic_type breakdown
+  const breakdown: Record<string, number> = { self_service: 0, cross_docking: 0, xd_drop_off: 0, other: 0, null: 0 };
+  for (const d of Array.from(shipDataMap.values())) {
+    const lt = d.logistic_type;
+    if (lt === null) breakdown["null"]++;
+    else if (lt in breakdown) breakdown[lt]++;
+    else breakdown["other"]++;
+  }
+  console.log('[sync] logistic_type breakdown:', breakdown);
 
   // ── 3. Build and upsert orders (includes logistic_type + shipment_mode) ─
   const orderRows = allOrders.map((o) => {

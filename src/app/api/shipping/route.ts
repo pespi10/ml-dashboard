@@ -86,6 +86,14 @@ export async function GET() {
       .from("shipments")
       .select("order_id, seller_cost");
 
+    // Log logistic_type breakdown from DB
+    const ltBreakdown: Record<string, number> = {};
+    for (const o of (ordersWithLogistic as { logistic_type: string | null }[])) {
+      const lt = o.logistic_type ?? "null";
+      ltBreakdown[lt] = (ltBreakdown[lt] ?? 0) + 1;
+    }
+    console.log('[shipping] DB logistic_type breakdown:', ltBreakdown);
+
     const costByOrderId = new Map<number, number>();
     for (const s of (shipCosts ?? [])) costByOrderId.set(s.order_id as number, s.seller_cost as number ?? 0);
 
