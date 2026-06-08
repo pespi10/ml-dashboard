@@ -1,4 +1,8 @@
 -- Correr en Supabase SQL Editor antes de usar el sistema de sync
+-- Agregar columnas de tipo logístico a órdenes (idempotente):
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS logistic_type text;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipment_mode text;
+
 -- ─────────────────────────────────────────────────────────────
 
 -- Órdenes sincronizadas desde MercadoLibre

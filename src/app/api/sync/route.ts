@@ -1,12 +1,10 @@
 // src/app/api/sync/route.ts
-// Vercel extended timeout — sync can take several minutes for large periods
 export const maxDuration = 300;
 
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { isTokenExpired, refreshAccessToken } from "@/lib/ml-api";
 import { supabaseAdmin } from "@/lib/supabase";
-import { isLogisticaPropia } from "@/lib/shipping-config";
 import { buildSessionCookieValue, SESSION_COOKIE_OPTIONS } from "@/lib/session";
 
 const ML_BASE = "https://api.mercadolibre.com";
@@ -24,11 +22,9 @@ async function mlGet<T>(path: string, token: string): Promise<T | null> {
   }
 }
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 
-function defaultRange(): { from: string; to: string } {
+function defaultRange() {
   const now = new Date();
   return {
     from: new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0],
@@ -38,9 +34,12 @@ function defaultRange(): { from: string; to: string } {
 
 function prevMonthKey(): string {
   const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth() - 1, 1)
-    .toISOString()
-    .slice(0, 7) + "-01";
+  return new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 7) + "-01";
+}
+
+// self_service / xd_drop_off = logística propia (FLEX)
+function isFlexLogistic(logisticType: string | null | undefined): boolean {
+  return logisticType === "self_service" || logisticType === "xd_drop_off";
 }
 
 interface RawOrderItem {
@@ -60,6 +59,12 @@ interface RawOrder {
   shipping?: { id?: number } | null;
 }
 
+interface MLShipmentDetail {
+  id: number;
+  logistic_type?: string | null;
+  mode?: string | null;
+}
+
 interface MLPerception {
   description?: string;
   aliquot?: number;
@@ -76,20 +81,17 @@ export async function POST(request: NextRequest) {
 
   let activeTokens = tokens;
   if (isTokenExpired(tokens)) {
-    try {
-      activeTokens = await refreshAccessToken(tokens);
-    } catch {
-      return NextResponse.json({ error: "Token expired" }, { status: 401 });
-    }
+    try { activeTokens = await refreshAccessToken(tokens); }
+    catch { return NextResponse.json({ error: "Token expired" }, { status: 401 }); }
   }
   const accessToken = activeTokens.access_token;
 
   const body = await request.json().catch(() => ({})) as { date_from?: string; date_to?: string };
   const defaults = defaultRange();
   const dateFromStr = body.date_from ?? defaults.from;
-  const dateToStr = body.date_to ?? defaults.to;
+  const dateToStr   = body.date_to   ?? defaults.to;
   const dateFrom = `${dateFromStr}T00:00:00.000Z`;
-  const dateTo = `${dateToStr}T23:59:59.999Z`;
+  const dateTo   = `${dateToStr}T23:59:59.999Z`;
 
   // ── 1. Fetch all orders (paginated, deduplicated) ──────────────────────
   const allOrders: RawOrder[] = [];
@@ -102,21 +104,55 @@ export async function POST(request: NextRequest) {
       accessToken
     );
     if (!page || !page.results.length) break;
-
     for (const o of page.results) {
-      if (!seenIds.has(o.id)) {
-        seenIds.add(o.id);
-        allOrders.push(o);
-      }
+      if (!seenIds.has(o.id)) { seenIds.add(o.id); allOrders.push(o); }
     }
-
     offset += 50;
     if (offset >= page.paging.total || page.results.length < 50) break;
   }
 
-  // ── 2. Upsert orders in batches of 100 ────────────────────────────────
+  // ── 2. Fetch shipment details (logistic_type, mode, seller_cost) ───────
+  // Build shipId → orderId map first
+  const shipIdToOrderId = new Map<number, number>();
+  for (const o of allOrders) {
+    if (o.shipping?.id && o.shipping.id > 0 && !shipIdToOrderId.has(o.shipping.id)) {
+      shipIdToOrderId.set(o.shipping.id, o.id);
+    }
+  }
+
+  interface ShipData { logistic_type: string | null; mode: string | null; seller_cost: number; is_flex: boolean }
+  const shipDataMap = new Map<number, ShipData>();
+
+  const shipIds = Array.from(shipIdToOrderId.keys());
+  const shipmentRows: { id: number; order_id: number; seller_cost: number; is_flex: boolean }[] = [];
+
+  for (let i = 0; i < shipIds.length; i += 20) {
+    const batch = shipIds.slice(i, i + 20);
+    const results = await Promise.all(
+      batch.map(async (shipId) => {
+        const [shipment, costs] = await Promise.all([
+          mlGet<MLShipmentDetail>(`/shipments/${shipId}`, accessToken),
+          mlGet<{ senders?: Array<{ cost?: number }> }>(`/shipments/${shipId}/costs`, accessToken),
+        ]);
+        const logisticType = shipment?.logistic_type ?? null;
+        const data: ShipData = {
+          logistic_type: logisticType,
+          mode: shipment?.mode ?? null,
+          seller_cost: costs?.senders?.[0]?.cost ?? 0,
+          is_flex: isFlexLogistic(logisticType),
+        };
+        shipDataMap.set(shipId, data);
+        return { id: shipId, order_id: shipIdToOrderId.get(shipId)!, seller_cost: data.seller_cost, is_flex: data.is_flex };
+      })
+    );
+    shipmentRows.push(...results);
+    if (i + 20 < shipIds.length) await sleep(200);
+  }
+
+  // ── 3. Build and upsert orders (includes logistic_type + shipment_mode) ─
   const orderRows = allOrders.map((o) => {
     const item0 = o.order_items?.[0];
+    const shipData = o.shipping?.id ? shipDataMap.get(o.shipping.id) : null;
     return {
       id: o.id,
       date_created: o.date_created,
@@ -131,6 +167,8 @@ export async function POST(request: NextRequest) {
       unit_price: item0?.unit_price ?? 0,
       pack_id: o.pack_id ?? null,
       shipment_id: o.shipping?.id ?? null,
+      logistic_type: shipData?.logistic_type ?? null,
+      shipment_mode: shipData?.mode ?? null,
     };
   });
 
@@ -139,49 +177,10 @@ export async function POST(request: NextRequest) {
     const { error } = await supabaseAdmin
       .from("orders")
       .upsert(orderRows.slice(i, i + 100), { onConflict: "id" });
-    if (error) {
-      console.error("[sync] orders upsert error:", error);
-      ordersUpsertError = error.message;
-    }
+    if (error) { console.error("[sync] orders upsert error:", error); ordersUpsertError = error.message; }
   }
 
-  // ── 3. Fetch shipment costs in batches of 20 ──────────────────────────
-  const shipmentMap = new Map<number, number>(); // shipId → orderId
-  for (const o of orderRows) {
-    if (o.shipment_id && o.shipment_id > 0 && !shipmentMap.has(o.shipment_id)) {
-      shipmentMap.set(o.shipment_id, o.id);
-    }
-  }
-
-  const shipIds = Array.from(shipmentMap.keys());
-  const shipmentRows: { id: number; order_id: number; seller_cost: number; is_flex: boolean }[] = [];
-
-  for (let i = 0; i < shipIds.length; i += 20) {
-    const batch = shipIds.slice(i, i + 20);
-    const results = await Promise.all(
-      batch.map(async (shipId) => {
-        const [shipment, costs] = await Promise.all([
-          mlGet<{ id: number; receiver_address?: { zip_code?: string } }>(
-            `/shipments/${shipId}`,
-            accessToken
-          ),
-          mlGet<{ senders?: Array<{ cost?: number }> }>(
-            `/shipments/${shipId}/costs`,
-            accessToken
-          ),
-        ]);
-        return {
-          id: shipId,
-          order_id: shipmentMap.get(shipId)!,
-          seller_cost: costs?.senders?.[0]?.cost ?? 0,
-          is_flex: isLogisticaPropia(shipment?.receiver_address?.zip_code ?? null),
-        };
-      })
-    );
-    shipmentRows.push(...results);
-    if (i + 20 < shipIds.length) await sleep(200);
-  }
-
+  // ── 4. Upsert shipments ────────────────────────────────────────────────
   if (shipmentRows.length > 0) {
     const { error } = await supabaseAdmin
       .from("shipments")
@@ -189,7 +188,7 @@ export async function POST(request: NextRequest) {
     if (error) console.error("[sync] shipments upsert error:", error);
   }
 
-  // ── 4. Fetch IIBB perceptions for previous month ──────────────────────
+  // ── 5. Fetch IIBB perceptions for previous month ──────────────────────
   const period = prevMonthKey();
   let perceptionsCount = 0;
 
@@ -200,11 +199,9 @@ export async function POST(request: NextRequest) {
 
   let perceptions: MLPerception[] = [];
   if (percRaw) {
-    if (Array.isArray(percRaw.summary)) {
-      perceptions = percRaw.summary;
-    } else if (Array.isArray(percRaw.perceptions)) {
-      perceptions = percRaw.perceptions as MLPerception[];
-    } else if (percRaw.perceptions && typeof percRaw.perceptions === "object") {
+    if (Array.isArray(percRaw.summary)) perceptions = percRaw.summary;
+    else if (Array.isArray(percRaw.perceptions)) perceptions = percRaw.perceptions as MLPerception[];
+    else if (percRaw.perceptions && typeof percRaw.perceptions === "object") {
       const nested = (percRaw.perceptions as { summary?: MLPerception[] }).summary;
       if (Array.isArray(nested)) perceptions = nested;
     }
@@ -227,7 +224,7 @@ export async function POST(request: NextRequest) {
     else console.error("[sync] perceptions upsert error:", error);
   }
 
-  // ── 5. Write sync log ─────────────────────────────────────────────────
+  // ── 6. Write sync log ─────────────────────────────────────────────────
   const durationMs = Date.now() - t0;
   await supabaseAdmin.from("sync_log").insert({
     date_from: dateFromStr,
@@ -248,11 +245,7 @@ export async function POST(request: NextRequest) {
   });
 
   if (activeTokens !== tokens) {
-    response.cookies.set({
-      ...SESSION_COOKIE_OPTIONS,
-      value: buildSessionCookieValue(activeTokens),
-    });
+    response.cookies.set({ ...SESSION_COOKIE_OPTIONS, value: buildSessionCookieValue(activeTokens) });
   }
-
   return response;
 }
