@@ -15,9 +15,14 @@ import {
 import { buildSessionCookieValue, SESSION_COOKIE_OPTIONS } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabase";
 
-// ── DB-based profitability/sales helpers ─────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+function isFlexLogistic(lt: string | null | undefined): boolean {
+  return lt === "self_service" || lt === "xd_drop_off";
+}
 
 interface DBOrderRow {
+  id: number;
   item_id: string | null;
   item_title: string | null;
   category_id: string | null;
@@ -27,6 +32,66 @@ interface DBOrderRow {
   date_created: string;
   total_amount: number;
   logistic_type: string | null;
+}
+
+// Full paginated fetch — loops in chunks of 1,000 until all rows are retrieved
+async function fetchAllOrdersFromDB(fromStr: string, toStr: string): Promise<DBOrderRow[] | null> {
+  const PAGE = 1000;
+  const all: DBOrderRow[] = [];
+  let offset = 0;
+  let totalCount: number | null = null;
+
+  while (true) {
+    const q = supabaseAdmin
+      .from("orders")
+      .select(
+        "id, item_id, item_title, category_id, quantity, unit_price, sale_fee, date_created, total_amount, logistic_type",
+        offset === 0 ? { count: "exact" } : {}
+      )
+      .gte("date_created", `${fromStr}T00:00:00.000Z`)
+      .lte("date_created", `${toStr}T23:59:59.999Z`)
+      .range(offset, offset + PAGE - 1);
+
+    const { data, error, count } = await q;
+
+    if (error) {
+      console.error("[dashboard] DB query error:", error.message);
+      return null;
+    }
+    if (!data || data.length === 0) break;
+
+    all.push(...(data as DBOrderRow[]));
+
+    if (offset === 0) {
+      totalCount = count ?? null;
+      if (!totalCount || totalCount === 0) return null; // no DB data → ML fallback
+      console.log("[dashboard] orders from DB:", totalCount, "| fetching in pages of", PAGE);
+    }
+
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+
+  if (all.length === 0) return null;
+
+  // Debug logs
+  const gmvSum = all.reduce((s, r) => s + (r.total_amount ?? 0), 0);
+  console.log("[dashboard] fetched from DB:", all.length, "/ expected:", totalCount);
+  console.log("[dashboard] sum total_amount:", gmvSum);
+  console.log("[dashboard] sample order:", JSON.stringify(all[0] ?? null));
+
+  const ltBreakdown: Record<string, number> = {};
+  for (const r of all) {
+    const lt = r.logistic_type ?? "null";
+    ltBreakdown[lt] = (ltBreakdown[lt] ?? 0) + 1;
+  }
+  const flexCount    = (ltBreakdown["self_service"] ?? 0) + (ltBreakdown["xd_drop_off"] ?? 0);
+  const colectaCount = all.length - flexCount;
+  console.log("[dashboard] flex orders:", flexCount);
+  console.log("[dashboard] colecta orders:", colectaCount);
+  console.log("[dashboard] logistic_type breakdown:", ltBreakdown);
+
+  return all;
 }
 
 function profitabilityFromDB(rows: DBOrderRow[]): ProfitabilityItem[] {
@@ -90,42 +155,6 @@ function salesStatsFromDB(rows: DBOrderRow[], page: number, limit: number) {
   return { gmv, orders: rows.length, avgTicket, topItems, revenueByDay, page, limit };
 }
 
-async function queryDBOrders(fromStr: string, toStr: string): Promise<DBOrderRow[] | null> {
-  const { data, error, count } = await supabaseAdmin
-    .from("orders")
-    .select("item_id, item_title, category_id, quantity, unit_price, sale_fee, date_created, total_amount, logistic_type", {
-      count: "exact",
-    })
-    .gte("date_created", `${fromStr}T00:00:00.000Z`)
-    .lte("date_created", `${toStr}T23:59:59.999Z`);
-
-  console.log('[dashboard] orders from DB:', count, '| error:', error?.message ?? null);
-  if (error || !count || !data) return null;
-
-  const rows = data as DBOrderRow[];
-
-  console.log('[dashboard] sum total_amount:', rows.reduce((s, o) => s + (o.total_amount ?? 0), 0));
-  console.log('[dashboard] sample order:', JSON.stringify(rows[0] ?? null));
-
-  // Flex / Colecta breakdown
-  const ltBreakdown: Record<string, number> = {};
-  for (const r of rows) {
-    const lt = r.logistic_type ?? "null";
-    ltBreakdown[lt] = (ltBreakdown[lt] ?? 0) + 1;
-  }
-  const flexCount    = (ltBreakdown["self_service"] ?? 0) + (ltBreakdown["xd_drop_off"] ?? 0);
-  const colectaCount = (ltBreakdown["cross_docking"] ?? 0) + (ltBreakdown["fulfillment"] ?? 0) + (ltBreakdown["drop_off"] ?? 0);
-  const unknownCount = (ltBreakdown["null"] ?? 0) + Object.entries(ltBreakdown)
-    .filter(([k]) => !["self_service","xd_drop_off","cross_docking","fulfillment","drop_off","null"].includes(k))
-    .reduce((s, [, v]) => s + v, 0);
-  console.log('[dashboard] flex orders:', flexCount);
-  console.log('[dashboard] colecta orders:', colectaCount);
-  console.log('[dashboard] unknown logistic_type orders:', unknownCount);
-  console.log('[dashboard] logistic_type breakdown:', ltBreakdown);
-
-  return rows;
-}
-
 // ── Route ─────────────────────────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
@@ -158,31 +187,72 @@ export async function GET(request: NextRequest) {
   const ordersOptions: number | OrdersOptions =
     dateFrom && dateTo ? { date_from: dateFrom, date_to: dateTo } : days;
 
-  // Normalize date strings for DB queries
   const fromStr = dateFrom ?? new Date(Date.now() - days * 86400_000).toISOString().split("T")[0];
-  const toStr = dateTo ?? new Date().toISOString().split("T")[0];
+  const toStr   = dateTo   ?? new Date().toISOString().split("T")[0];
 
   try {
     let data;
 
     if (isOverview) {
-      data = await getDashboardOverview(activeTokens, ordersOptions);
+      // ── Try DB: real per-order split by logistic_type ──────────────────
+      const rows = await fetchAllOrdersFromDB(fromStr, toStr);
+
+      if (rows) {
+        const flexRows    = rows.filter(r => isFlexLogistic(r.logistic_type));
+        const colectaRows = rows.filter(r => !isFlexLogistic(r.logistic_type));
+
+        const totalRevenue    = rows.reduce((s, r) => s + (r.total_amount ?? 0), 0);
+        const totalSaleFees   = rows.reduce((s, r) => s + (r.sale_fee ?? 0), 0);
+        const flexRevenue     = flexRows.reduce((s, r) => s + (r.total_amount ?? 0), 0);
+        const colectaRevenue  = colectaRows.reduce((s, r) => s + (r.total_amount ?? 0), 0);
+        const flexSaleFees    = flexRows.reduce((s, r) => s + (r.sale_fee ?? 0), 0);
+        const colectaSaleFees = colectaRows.reduce((s, r) => s + (r.sale_fee ?? 0), 0);
+
+        // Sum seller_cost for colecta shipments (chunked to stay under Supabase IN limit)
+        const colectaIds = colectaRows.map(r => r.id);
+        let colectaShippingCost = 0;
+        for (let i = 0; i < colectaIds.length; i += 1000) {
+          const { data: ships } = await supabaseAdmin
+            .from("shipments")
+            .select("seller_cost")
+            .in("order_id", colectaIds.slice(i, i + 1000));
+          for (const s of (ships ?? [])) colectaShippingCost += (s.seller_cost as number) ?? 0;
+        }
+
+        console.log("[dashboard/overview] flex:", flexRows.length, "rev:", flexRevenue, "colecta:", colectaRows.length, "rev:", colectaRevenue, "shippingCost:", colectaShippingCost);
+
+        data = {
+          ordersTotal: rows.length,
+          ordersPrevTotal: 0,
+          activeItems: 0,
+          pausedItems: 0,
+          flexCount: flexRows.length,
+          colectaCount: colectaRows.length,
+          flexRevenue,
+          colectaRevenue,
+          colectaShippingCost,
+          totalRevenue,
+          totalSaleFees,
+          flexSaleFees,
+          colectaSaleFees,
+          source: "db",
+        };
+      } else {
+        // ML fallback
+        data = await getDashboardOverview(activeTokens, ordersOptions);
+      }
 
     } else if (section === "profitability") {
-      const dbRows = await queryDBOrders(fromStr, toStr);
-      if (dbRows) {
-        data = { profitabilityByItem: profitabilityFromDB(dbRows) };
-      } else {
-        data = await getProfitabilityStats(activeTokens, ordersOptions);
-      }
+      const rows = await fetchAllOrdersFromDB(fromStr, toStr);
+      data = rows
+        ? { profitabilityByItem: profitabilityFromDB(rows) }
+        : await getProfitabilityStats(activeTokens, ordersOptions);
 
     } else if (section === "sales") {
-      const dbRows = await queryDBOrders(fromStr, toStr);
-      if (dbRows) {
-        data = salesStatsFromDB(dbRows, page, limit);
-      } else {
-        data = await getDashboardSalesStats(activeTokens, page, limit, ordersOptions);
-      }
+      const rows = await fetchAllOrdersFromDB(fromStr, toStr);
+      data = rows
+        ? salesStatsFromDB(rows, page, limit)
+        : await getDashboardSalesStats(activeTokens, page, limit, ordersOptions);
 
     } else if (section === "stock") {
       data = await getDashboardStockStats(activeTokens, page, limit);

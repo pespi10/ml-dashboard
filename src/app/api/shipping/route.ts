@@ -76,29 +76,46 @@ export async function GET() {
   }
 
   // ── Try DB: use logistic_type from orders + seller_cost from shipments ─
-  const { data: ordersWithLogistic, count } = await supabaseAdmin
-    .from("orders")
-    .select("id, logistic_type, total_amount", { count: "exact" })
-    .not("shipment_id", "is", null);
+  // Paginate with .range() — Supabase default is 1,000 rows max
+  const allOrdersDB: { id: number; logistic_type: string | null; total_amount: number }[] = [];
+  let dbOffset = 0;
+  while (true) {
+    const { data: pg, error: pgErr } = await supabaseAdmin
+      .from("orders")
+      .select("id, logistic_type, total_amount")
+      .not("shipment_id", "is", null)
+      .range(dbOffset, dbOffset + 999);
+    if (pgErr || !pg || pg.length === 0) break;
+    allOrdersDB.push(...(pg as typeof allOrdersDB));
+    if (pg.length < 1000) break;
+    dbOffset += 1000;
+  }
 
-  if (count && count > 0 && ordersWithLogistic) {
-    console.log('[shipping] source: db | total orders with shipment_id:', count);
-
-    const { data: shipCosts } = await supabaseAdmin
+  const allShipCostsDB: { order_id: number; seller_cost: number }[] = [];
+  let scOffset = 0;
+  while (true) {
+    const { data: pg, error: pgErr } = await supabaseAdmin
       .from("shipments")
-      .select("order_id, seller_cost");
+      .select("order_id, seller_cost")
+      .range(scOffset, scOffset + 999);
+    if (pgErr || !pg || pg.length === 0) break;
+    allShipCostsDB.push(...(pg as typeof allShipCostsDB));
+    if (pg.length < 1000) break;
+    scOffset += 1000;
+  }
 
-    const typedOrders = ordersWithLogistic as { id: number; logistic_type: string | null; total_amount: number }[];
+  if (allOrdersDB.length > 0) {
+    console.log('[shipping] source: db | total orders with shipment_id:', allOrdersDB.length);
 
     // Logistic_type breakdown and unique values
     const ltBreakdown: Record<string, number> = {};
-    for (const o of typedOrders) {
+    for (const o of allOrdersDB) {
       const lt = o.logistic_type ?? "null";
       ltBreakdown[lt] = (ltBreakdown[lt] ?? 0) + 1;
     }
     const uniqueTypes = Object.keys(ltBreakdown).sort();
     const flexCount    = (ltBreakdown["self_service"] ?? 0) + (ltBreakdown["xd_drop_off"] ?? 0);
-    const colectaCount = (ltBreakdown["cross_docking"] ?? 0) + (ltBreakdown["fulfillment"] ?? 0) + (ltBreakdown["drop_off"] ?? 0);
+    const colectaCount = allOrdersDB.length - flexCount;
 
     console.log('[shipping] flex count from DB:', flexCount);
     console.log('[shipping] colecta count from DB:', colectaCount);
@@ -106,15 +123,15 @@ export async function GET() {
     console.log('[shipping] DB logistic_type breakdown:', ltBreakdown);
 
     const costByOrderId = new Map<number, number>();
-    for (const s of (shipCosts ?? [])) costByOrderId.set(s.order_id as number, s.seller_cost as number ?? 0);
+    for (const s of allShipCostsDB) costByOrderId.set(s.order_id, s.seller_cost ?? 0);
 
-    const results = typedOrders.map((o) => ({
+    const results = allOrdersDB.map((o) => ({
       isFlex: isFlexLogistic(o.logistic_type),
       senderCost: costByOrderId.get(o.id) ?? 0,
       receiverCost: 0,
     }));
 
-    const revenues = typedOrders.map((o) => o.total_amount ?? 0).filter((v) => v > 0);
+    const revenues = allOrdersDB.map((o) => o.total_amount ?? 0).filter((v) => v > 0);
 
     return NextResponse.json({ ...buildShippingResponse(results, revenues), source: "db" });
   }

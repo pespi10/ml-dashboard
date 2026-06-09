@@ -3,12 +3,30 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import type {
-  DashboardOverview,
   DashboardSalesStats,
   DashboardStockStats,
   ProfitabilityItem,
 } from "@/lib/ml-api";
 import { formatARS } from "@/lib/ml-api";
+
+// Extended overview — DB path adds real per-channel data
+interface OverviewData {
+  ordersTotal: number;
+  ordersPrevTotal: number;
+  activeItems: number;
+  pausedItems: number;
+  source?: "db" | "ml";
+  // Present when source === "db"
+  flexCount?: number;
+  colectaCount?: number;
+  flexRevenue?: number;
+  colectaRevenue?: number;
+  colectaShippingCost?: number;
+  totalRevenue?: number;
+  totalSaleFees?: number;
+  flexSaleFees?: number;
+  colectaSaleFees?: number;
+}
 import RevenueChart from "@/components/charts/RevenueChart";
 import DateRangePicker, { defaultDateRange } from "@/components/ui/DateRangePicker";
 
@@ -332,7 +350,7 @@ function SyncModal({
 export default function DashboardPage() {
   const [dateFrom, setDateFrom] = useState(() => defaultDateRange().from);
   const [dateTo, setDateTo] = useState(() => defaultDateRange().to);
-  const [overview, setOverview] = useState<DashboardOverview | null>(null);
+  const [overview, setOverview] = useState<OverviewData | null>(null);
   const [profItems, setProfItems] = useState<ProfitabilityItem[] | null>(null);
   const [shipping, setShipping] = useState<ShippingData | null>(null);
   const [taxes, setTaxes] = useState<TaxData | null>(null);
@@ -369,7 +387,7 @@ export default function DashboardPage() {
         return;
       }
       if (!ovRes.ok) throw new Error("Error al cargar datos");
-      const ov: DashboardOverview = await ovRes.json();
+      const ov: OverviewData = await ovRes.json();
       setOverview(ov);
       setLastUpdate(new Date());
       if (profRes.ok) {
@@ -426,6 +444,7 @@ export default function DashboardPage() {
   const metrics = (() => {
     if (!overview || !profItems || !shipping || !taxes || !costsData) return null;
 
+    // ── Product costs (still per-item from profitability data) ────────────
     const costsMap: Record<string, number> = {};
     for (const c of costsData) costsMap[c.ml_id] = c.costo;
 
@@ -436,30 +455,40 @@ export default function DashboardPage() {
       (s, i) => s + (costsMap[i.itemId] ?? 0) * i.unitsSold, 0
     );
 
-    const gmv = profItems.reduce((s, i) => s + i.grossRevenue, 0);
-    const commTotal = profItems.reduce((s, i) => s + i.totalSaleFees, 0);
-    const orders = overview.ordersTotal;
+    // ── Channel split: use real DB values when available ──────────────────
+    const hasDB = overview.source === "db" && overview.flexRevenue !== undefined;
 
-    const sf = shipping.splitRatio.propia / 100;
-    const sm = shipping.splitRatio.ml / 100;
+    const gmv      = hasDB ? (overview.totalRevenue   ?? 0) : profItems.reduce((s, i) => s + i.grossRevenue,   0);
+    const commTotal = hasDB ? (overview.totalSaleFees  ?? 0) : profItems.reduce((s, i) => s + i.totalSaleFees, 0);
+    const orders   = overview.ordersTotal;
 
-    const ordersFlex = Math.round(orders * sf);
-    const revFlex = gmv * sf;
+    const ordersFlex = hasDB ? (overview.flexCount    ?? 0) : Math.round(orders * (shipping.splitRatio.propia / 100));
+    const ordersML   = hasDB ? (overview.colectaCount ?? 0) : Math.round(orders * (shipping.splitRatio.ml    / 100));
+    const revFlex    = hasDB ? (overview.flexRevenue    ?? 0) : gmv * (shipping.splitRatio.propia / 100);
+    const revML      = hasDB ? (overview.colectaRevenue ?? 0) : gmv * (shipping.splitRatio.ml    / 100);
+    const commFlex   = hasDB ? (overview.flexSaleFees    ?? 0) : commTotal * (ordersFlex / Math.max(orders, 1));
+    const commML     = hasDB ? (overview.colectaSaleFees ?? 0) : commTotal * (ordersML   / Math.max(orders, 1));
+
+    // Shipping costs
     const shipFlex = ordersFlex * COSTO_FLEX;
-    const commFlex = commTotal * sf;
+    const shipML   = hasDB
+      ? (overview.colectaShippingCost ?? 0)
+      : ordersML * shipping.avgSellerCost * (shipping.pctSellerPays / 100);
+
+    if (!hasDB) {
+      console.log('[overview] fallback ratio | pedidosML:', ordersML, 'pctSellerPays:', shipping.pctSellerPays, 'avgSellerCost:', shipping.avgSellerCost, 'costoEnvioML:', shipML);
+    }
+
+    // IIBB — applied on channel revenue
     const iibbFlex = revFlex * (taxes.ventasRate / 100);
-    const costoProductosFlex = costoTotalProductos * sf;
+    const iibbML   = revML   * ((taxes.ventasRate + taxes.enviosRate) / 100);
 
-    const ordersML = Math.round(orders * sm);
-    const revML = gmv * sm;
-    const shipML = ordersML * shipping.avgSellerCost * (shipping.pctSellerPays / 100);
-    console.log('[overview] pedidosML:', ordersML, 'pctSellerPays:', shipping.pctSellerPays, 'avgSellerCost:', shipping.avgSellerCost, 'costoEnvioML:', shipML);
-    const commML = commTotal * sm;
-    const iibbML = revML * ((taxes.ventasRate + taxes.enviosRate) / 100);
-    const costoProductosML = costoTotalProductos * sm;
+    // Product costs — split proportionally to revenue
+    const costoProductosFlex = gmv > 0 ? costoTotalProductos * (revFlex / gmv) : 0;
+    const costoProductosML   = gmv > 0 ? costoTotalProductos * (revML   / gmv) : 0;
 
-    const totalShip = shipFlex + shipML;
-    const totalIibb = iibbFlex + iibbML;
+    const totalShip  = shipFlex + shipML;
+    const totalIibb  = iibbFlex + iibbML;
     const profitTotal = gmv - totalShip - commTotal - totalIibb - costoTotalProductos;
     const marginTotal = gmv > 0 ? (profitTotal / gmv) * 100 : 0;
 
