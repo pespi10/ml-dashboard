@@ -377,34 +377,21 @@ export default function DashboardPage() {
   const fetchPeriodData = useCallback(async (from: string, to: string) => {
     setOverviewLoading(true);
     setProfLoading(true);
-    setChartLoading(true);
     setError(null);
     const q = `date_from=${from}&date_to=${to}`;
     try {
-      const [ovRes, profRes, chartRes] = await Promise.all([
-        fetch(`/api/dashboard?overview=1&${q}`),
-        fetch(`/api/dashboard?section=profitability&${q}`),
-        fetch(`/api/dashboard?section=sales&page=1&limit=50&${q}`),
-      ]);
-      if ([ovRes, profRes, chartRes].some((r) => r.status === 401)) {
-        window.location.href = "/login";
-        return;
-      }
-      if (!ovRes.ok) throw new Error("Error al cargar datos");
-      const ov: OverviewData = await ovRes.json();
-      setOverview(ov);
+      const res = await fetch(`/api/dashboard/overview-complete?${q}`);
+      if (res.status === 401) { window.location.href = "/login"; return; }
+      if (!res.ok) throw new Error("Error al cargar datos");
+      const data = await res.json();
+      setOverview(data);
+      setProfItemsRaw(data.profitabilityByItem ?? []);
       setLastUpdate(new Date());
-      if (profRes.ok) {
-        const prof: { profitabilityByItem: ProfitabilityItem[] } = await profRes.json();
-        setProfItemsRaw(prof.profitabilityByItem);
-      }
-      if (chartRes.ok) setSalesStats(await chartRes.json());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error desconocido");
     } finally {
       setOverviewLoading(false);
       setProfLoading(false);
-      setChartLoading(false);
     }
   }, []);
 
