@@ -56,7 +56,7 @@ interface RawOrder {
   total_amount: number;
   pack_id?: number | null;
   order_items: RawOrderItem[];
-  shipping?: { id?: number } | null;
+  shipping?: { id?: number; logistic_type?: string | null; mode?: string | null } | null;
 }
 
 interface MLShipmentDetail {
@@ -137,73 +137,35 @@ export async function POST(request: NextRequest) {
   }
   console.log('[sync] orders before dedup:', rawCount, 'after dedup:', allOrders.length, '| ML reported total:', mlTotal);
 
-  // ── 2. Fetch shipment details (logistic_type, mode, seller_cost) ───────
-  // Build shipId → orderId map first
-  const shipIdToOrderId = new Map<number, number>();
-  for (const o of allOrders) {
-    if (o.shipping?.id && o.shipping.id > 0 && !shipIdToOrderId.has(o.shipping.id)) {
-      shipIdToOrderId.set(o.shipping.id, o.id);
-    }
-  }
-
+  // ── 2. Read logistic_type from order object — zero extra API calls ───────
   interface ShipData { logistic_type: string | null; mode: string | null; seller_cost: number; is_flex: boolean }
   const shipDataMap = new Map<number, ShipData>();
-
-  const shipIds = Array.from(shipIdToOrderId.keys());
-  const shipmentRows: { id: number; order_id: number; seller_cost: number; is_flex: boolean }[] = [];
-  let samplesLogged = 0;
-
-  for (let i = 0; i < shipIds.length; i += 20) {
-    const batch = shipIds.slice(i, i + 20);
-    const results = await Promise.all(
-      batch.map(async (shipId) => {
-        const [shipment, costs] = await Promise.all([
-          mlGet<MLShipmentDetail>(`/shipments/${shipId}`, accessToken),
-          mlGet<{ senders?: Array<{ cost?: number }> }>(`/shipments/${shipId}/costs`, accessToken),
-        ]);
-        const logisticType = shipment?.logistic_type ?? null;
-        const isFlex = isFlexLogistic(logisticType);
-        const data: ShipData = {
-          logistic_type: logisticType,
-          mode: shipment?.mode ?? null,
-          seller_cost: costs?.senders?.[0]?.cost ?? 0,
-          is_flex: isFlex,
-        };
-        shipDataMap.set(shipId, data);
-
-        if (samplesLogged < 5) {
-          console.log('[sync] shipment sample:', {
-            id: shipment?.id ?? shipId,
-            logistic_type: shipment?.logistic_type ?? null,
-            mode: shipment?.mode ?? null,
-            is_flex: isFlex,
-          });
-          samplesLogged++;
-        }
-
-        return { id: shipId, order_id: shipIdToOrderId.get(shipId)!, seller_cost: data.seller_cost, is_flex: isFlex };
-      })
-    );
-    shipmentRows.push(...results);
-    if (i + 20 < shipIds.length) await sleep(200);
+  const shipIdToOrderId = new Map<number, number>();
+  for (const o of allOrders) {
+    if (o.shipping?.id && o.shipping.id > 0) {
+      const lt = o.shipping.logistic_type ?? null;
+      shipIdToOrderId.set(o.shipping.id, o.id);
+      shipDataMap.set(o.shipping.id, {
+        logistic_type: lt,
+        mode: o.shipping.mode ?? null,
+        seller_cost: 0,
+        is_flex: isFlexLogistic(lt),
+      });
+    }
   }
-
-  // Logistic_type breakdown
-  const breakdown: Record<string, number> = {
-    self_service: 0, xd_drop_off: 0,           // flex
-    cross_docking: 0, fulfillment: 0, drop_off: 0, // colecta
-    other: 0, null: 0,
-  };
-  for (const d of Array.from(shipDataMap.values())) {
+  const shipmentRows: { id: number; order_id: number; seller_cost: number; is_flex: boolean }[] = [];
+  const breakdown: Record<string, number> = { self_service: 0, xd_drop_off: 0, cross_docking: 0, fulfillment: 0, drop_off: 0, other: 0, null: 0 };
+  for (const [shipId, d] of Array.from(shipDataMap.entries())) {
     const lt = d.logistic_type;
     if (lt === null) breakdown["null"]++;
     else if (lt in breakdown) breakdown[lt]++;
     else breakdown["other"]++;
+    shipmentRows.push({ id: shipId, order_id: shipIdToOrderId.get(shipId)!, seller_cost: 0, is_flex: d.is_flex });
   }
   const flexCount    = breakdown.self_service + breakdown.xd_drop_off;
   const colectaCount = breakdown.cross_docking + breakdown.fulfillment + breakdown.drop_off;
   const unknownCount = breakdown.null + breakdown.other;
-  console.log('[sync] logistic_type breakdown:', { ...breakdown, flex_count: flexCount, colecta_count: colectaCount, unknown_count: unknownCount });
+  console.log('[sync] logistic_type from order objects:', { ...breakdown, flex_count: flexCount, colecta_count: colectaCount });
 
   // ── 3. Build and upsert orders (includes logistic_type + shipment_mode) ─
   const orderRows = allOrders.map((o) => {
