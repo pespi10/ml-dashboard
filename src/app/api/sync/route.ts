@@ -54,6 +54,7 @@ interface RawOrder {
   date_created: string;
   status: string;
   total_amount: number;
+  marketplace_fee?: number | null;
   pack_id?: number | null;
   order_items: RawOrderItem[];
   shipping?: { id?: number; logistic_type?: string | null; mode?: string | null } | null;
@@ -176,7 +177,7 @@ export async function POST(request: NextRequest) {
       date_created: o.date_created,
       status: o.status,
       total_amount: o.total_amount ?? 0,
-      sale_fee: item0?.sale_fee ?? 0,
+      sale_fee: o.marketplace_fee ?? item0?.sale_fee ?? 0,
       item_id: item0?.item?.id ?? null,
       item_title: item0?.item?.title ?? null,
       category_id: item0?.item?.category_id ?? null,
