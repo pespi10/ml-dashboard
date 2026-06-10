@@ -1,7 +1,7 @@
 // src/app/dashboard/page.tsx
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import type {
   DashboardSalesStats,
   DashboardStockStats,
@@ -351,7 +351,11 @@ export default function DashboardPage() {
   const [dateFrom, setDateFrom] = useState(() => defaultDateRange().from);
   const [dateTo, setDateTo] = useState(() => defaultDateRange().to);
   const [overview, setOverview] = useState<OverviewData | null>(null);
-  const [profItems, setProfItems] = useState<ProfitabilityItem[] | null>(null);
+  const [profItemsRaw, setProfItemsRaw] = useState<ProfitabilityItem[] | null>(null);
+  const profItems = useMemo(() =>
+    profItemsRaw ? [...profItemsRaw].sort((a, b) => a.itemId.localeCompare(b.itemId)) : null,
+    [profItemsRaw]
+  );
   const [shipping, setShipping] = useState<ShippingData | null>(null);
   const [taxes, setTaxes] = useState<TaxData | null>(null);
   const [salesStats, setSalesStats] = useState<DashboardSalesStats | null>(null);
@@ -392,7 +396,7 @@ export default function DashboardPage() {
       setLastUpdate(new Date());
       if (profRes.ok) {
         const prof: { profitabilityByItem: ProfitabilityItem[] } = await profRes.json();
-        setProfItems(prof.profitabilityByItem);
+        setProfItemsRaw(prof.profitabilityByItem);
       }
       if (chartRes.ok) setSalesStats(await chartRes.json());
     } catch (e) {
@@ -454,7 +458,9 @@ export default function DashboardPage() {
     const itemsWithSales = profItems.filter((i) => i.unitsSold > 0);
     const totalWithSales = itemsWithSales.length;
     const withCosto = itemsWithSales.filter((i) => costsMap[i.itemId] !== undefined).length;
-    const costoTotalProductos = itemsWithSales.reduce(
+    // Sort by itemId for deterministic order before reducing
+    const sortedItems = [...itemsWithSales].sort((a, b) => a.itemId.localeCompare(b.itemId));
+    const costoTotalProductos = sortedItems.reduce(
       (s, i) => s + (costsMap[i.itemId] ?? 0) * i.unitsSold, 0
     );
 
