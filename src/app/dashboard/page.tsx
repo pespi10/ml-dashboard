@@ -442,7 +442,10 @@ export default function DashboardPage() {
   const channelLoading = overviewLoading || profLoading || shippingLoading || taxLoading || costsLoading;
 
   const metrics = (() => {
-    if (!overview || !profItems || !shipping || !taxes || !costsData) return null;
+    if (!overview || !profItems || !taxes || !costsData) return null;
+    const hasDB = overview.source === "db" && overview.flexRevenue !== undefined;
+    if (!hasDB && !shipping) return null;
+    const sh = shipping as ShippingData; // non-null when !hasDB (guarded above)
 
     // ── Product costs (still per-item from profitability data) ────────────
     const costsMap: Record<string, number> = {};
@@ -456,16 +459,14 @@ export default function DashboardPage() {
     );
 
     // ── Channel split: use real DB values when available ──────────────────
-    const hasDB = overview.source === "db" && overview.flexRevenue !== undefined;
-
     const gmv      = hasDB ? (overview.totalRevenue   ?? 0) : profItems.reduce((s, i) => s + i.grossRevenue,   0);
     const commTotal = hasDB ? (overview.totalSaleFees  ?? 0) : profItems.reduce((s, i) => s + i.totalSaleFees, 0);
     const orders   = overview.ordersTotal;
 
-    const ordersFlex = hasDB ? (overview.flexCount    ?? 0) : Math.round(orders * (shipping.splitRatio.propia / 100));
-    const ordersML   = hasDB ? (overview.colectaCount ?? 0) : Math.round(orders * (shipping.splitRatio.ml    / 100));
-    const revFlex    = hasDB ? (overview.flexRevenue    ?? 0) : gmv * (shipping.splitRatio.propia / 100);
-    const revML      = hasDB ? (overview.colectaRevenue ?? 0) : gmv * (shipping.splitRatio.ml    / 100);
+    const ordersFlex = hasDB ? (overview.flexCount    ?? 0) : Math.round(orders * (sh.splitRatio.propia / 100));
+    const ordersML   = hasDB ? (overview.colectaCount ?? 0) : Math.round(orders * (sh.splitRatio.ml    / 100));
+    const revFlex    = hasDB ? (overview.flexRevenue    ?? 0) : gmv * (sh.splitRatio.propia / 100);
+    const revML      = hasDB ? (overview.colectaRevenue ?? 0) : gmv * (sh.splitRatio.ml    / 100);
     const commFlex   = hasDB ? (overview.flexSaleFees    ?? 0) : commTotal * (ordersFlex / Math.max(orders, 1));
     const commML     = hasDB ? (overview.colectaSaleFees ?? 0) : commTotal * (ordersML   / Math.max(orders, 1));
 
@@ -473,10 +474,10 @@ export default function DashboardPage() {
     const shipFlex = ordersFlex * COSTO_FLEX;
     const shipML   = hasDB
       ? (overview.colectaShippingCost ?? 0)
-      : ordersML * shipping.avgSellerCost * (shipping.pctSellerPays / 100);
+      : ordersML * sh.avgSellerCost * (sh.pctSellerPays / 100);
 
     if (!hasDB) {
-      console.log('[overview] fallback ratio | pedidosML:', ordersML, 'pctSellerPays:', shipping.pctSellerPays, 'avgSellerCost:', shipping.avgSellerCost, 'costoEnvioML:', shipML);
+      console.log('[overview] fallback ratio | pedidosML:', ordersML, 'pctSellerPays:', sh.pctSellerPays, 'avgSellerCost:', sh.avgSellerCost, 'costoEnvioML:', shipML);
     }
 
     // IIBB — applied on channel revenue
