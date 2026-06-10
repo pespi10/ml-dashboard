@@ -1,5 +1,5 @@
 // src/app/api/shipping/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { isTokenExpired, refreshAccessToken } from "@/lib/ml-api";
 import { LOGISTICA_PROPIA_COSTO_POR_PEDIDO } from "@/lib/shipping-config";
@@ -65,7 +65,10 @@ function buildShippingResponse(
   };
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const dateFrom = searchParams.get("date_from");
+  const dateTo   = searchParams.get("date_to");
   const tokens = getSession();
   if (!tokens) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -84,6 +87,8 @@ export async function GET() {
       .from("orders")
       .select("id, logistic_type, total_amount")
       .not("shipment_id", "is", null)
+      .gte("date_created", dateFrom ? `${dateFrom}T00:00:00.000Z` : "2000-01-01")
+      .lte("date_created", dateTo   ? `${dateTo}T23:59:59.999Z`   : "2099-12-31")
       .range(dbOffset, dbOffset + 999);
     if (pgErr || !pg || pg.length === 0) break;
     allOrdersDB.push(...(pg as typeof allOrdersDB));

@@ -404,13 +404,13 @@ export default function DashboardPage() {
     }
   }, []);
 
-  const fetchStaticData = useCallback(async () => {
+  const fetchStaticData = useCallback(async (from: string, to: string) => {
     setShippingLoading(true);
     setTaxLoading(true);
     setCostsLoading(true);
     setStockLoading(true);
     await Promise.all([
-      fetch("/api/shipping")
+      fetch(`/api/shipping?date_from=${from}&date_to=${to}`)
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => { if (d) setShipping(d); setShippingLoading(false); }),
       fetch("/api/billing/taxes")
@@ -425,7 +425,7 @@ export default function DashboardPage() {
     ]);
   }, []);
 
-  useEffect(() => { fetchStaticData(); }, [fetchStaticData]);
+  useEffect(() => { fetchStaticData(dateFrom, dateTo); }, [fetchStaticData, dateFrom, dateTo]);
   useEffect(() => { fetchPeriodData(dateFrom, dateTo); }, [dateFrom, dateTo, fetchPeriodData]);
   useEffect(() => {
     fetch("/api/sync/status")
@@ -436,7 +436,7 @@ export default function DashboardPage() {
 
   const refresh = () => {
     fetchPeriodData(dateFrom, dateTo);
-    fetchStaticData();
+    fetchStaticData(dateFrom, dateTo);
   };
 
   const channelLoading = overviewLoading || profLoading || shippingLoading || taxLoading || costsLoading;
@@ -863,7 +863,7 @@ export default function DashboardPage() {
             .then((d) => { if (d) setLastSync(d); })
             .catch(() => {});
           fetchPeriodData(dateFrom, dateTo);
-          fetchStaticData();
+          fetchStaticData(dateFrom, dateTo);
         }}
       />
     )}
