@@ -238,21 +238,37 @@ export async function GET(request: NextRequest) {
           source: "db",
         };
       } else {
-        // ML fallback
-        data = await getDashboardOverview(activeTokens, ordersOptions);
+        // No DB data — return empty structure instead of ML fallback
+        // ML fallback is unreliable (1000 row limit, wrong split ratios)
+        data = {
+          ordersTotal: 0,
+          ordersPrevTotal: 0,
+          activeItems: 0,
+          pausedItems: 0,
+          flexCount: 0,
+          colectaCount: 0,
+          flexRevenue: 0,
+          colectaRevenue: 0,
+          colectaShippingCost: 0,
+          totalRevenue: 0,
+          totalSaleFees: 0,
+          flexSaleFees: 0,
+          colectaSaleFees: 0,
+          source: "empty — run sync first",
+        };
       }
 
     } else if (section === "profitability") {
       const rows = await fetchAllOrdersFromDB(fromStr, toStr);
       data = rows
         ? { profitabilityByItem: profitabilityFromDB(rows) }
-        : await getProfitabilityStats(activeTokens, ordersOptions);
+        : { profitabilityByItem: [] };
 
     } else if (section === "sales") {
       const rows = await fetchAllOrdersFromDB(fromStr, toStr);
       data = rows
         ? salesStatsFromDB(rows, page, limit)
-        : await getDashboardSalesStats(activeTokens, page, limit, ordersOptions);
+        : salesStatsFromDB([], page, limit);
 
     } else if (section === "stock") {
       data = await getDashboardStockStats(activeTokens, page, limit);
