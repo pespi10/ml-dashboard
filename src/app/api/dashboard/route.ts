@@ -50,6 +50,7 @@ async function fetchAllOrdersFromDB(fromStr: string, toStr: string): Promise<DBO
       )
       .gte("date_created", `${fromStr}T00:00:00.000Z`)
       .lte("date_created", `${toStr}T23:59:59.999Z`)
+      .order("id")
       .range(offset, offset + PAGE - 1);
 
     const { data, error, count } = await q;
