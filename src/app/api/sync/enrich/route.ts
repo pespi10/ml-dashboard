@@ -73,12 +73,14 @@ export async function POST(request: NextRequest) {
 
     // Update in Supabase
     for (const r of results) {
-      if (!r.logistic_type) continue;
-      await supabaseAdmin
+      // Only update if we got a real value AND only for orders that still have null
+      if (!r.logistic_type || r.logistic_type.trim() === "") continue;
+      const { error: updateError } = await supabaseAdmin
         .from("orders")
         .update({ logistic_type: r.logistic_type, shipment_mode: r.shipment_mode })
-        .eq("id", r.id);
-      enriched++;
+        .eq("id", r.id)
+        .is("logistic_type", null);  // ← only update if still null, never overwrite existing
+      if (!updateError) enriched++;
     }
 
     if (i + BATCH < nullOrders.length) {
