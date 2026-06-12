@@ -215,7 +215,9 @@ export default function DashboardPage() {
   const [syncFrom,   setSyncFrom]  = useState(dateFrom);
   const [syncTo,     setSyncTo]    = useState(dateTo);
   const [syncPhase,  setSyncPhase] = useState<"idle" | "running" | "done" | "error">("idle");
-  const [syncResult, setSyncResult] = useState<{ orders_synced: number } | null>(null);
+  const [syncResult, setSyncResult] = useState<{ orders_synced: number; unknown_count?: number } | null>(null);
+  const [enrichPhase, setEnrichPhase] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [enrichResult, setEnrichResult] = useState<{ enriched: number; total_null: number; skipped: number } | null>(null);
 
   // ── Fetch dashboard data ────────────────────────────────────────────
   const fetchData = useCallback(async (from: string, to: string) => {
@@ -333,10 +335,31 @@ export default function DashboardPage() {
     };
   })();
 
+  // ── Enrich handler ──────────────────────────────────────────────────
+  async function runEnrich() {
+    setEnrichPhase("running");
+    setEnrichResult(null);
+    try {
+      const res = await fetch(`/api/sync/enrich?date_from=${syncFrom}&date_to=${syncTo}`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(`Error ${res.status}`);
+      const result = await res.json();
+      setEnrichResult(result);
+      setEnrichPhase("done");
+      fetchData(dateFrom, dateTo);
+    } catch (e) {
+      console.error(e);
+      setEnrichPhase("error");
+    }
+  }
+
   // ── Sync handler ────────────────────────────────────────────────────
   async function runSync() {
     setSyncPhase("running");
     setSyncResult(null);
+    setEnrichPhase("idle");
+    setEnrichResult(null);
     try {
       const res = await fetch("/api/sync", {
         method: "POST",
@@ -449,8 +472,43 @@ export default function DashboardPage() {
               <>
                 <p style={{ fontSize: 13, color: "var(--green)", fontFamily: "var(--font-mono)", marginBottom: 16 }}>
                   ✓ {syncResult?.orders_synced?.toLocaleString("es-AR")} órdenes sincronizadas
+                  {(syncResult?.unknown_count ?? 0) > 0 && (
+                    <span style={{ color: "var(--text-muted)", marginLeft: 8 }}>
+                      ({syncResult!.unknown_count} sin logistic_type)
+                    </span>
+                  )}
                 </p>
-                <button onClick={() => { setSyncOpen(false); setSyncPhase("idle"); }} style={{
+
+                {enrichPhase === "idle" && (syncResult?.unknown_count ?? 0) > 0 && (
+                  <button onClick={runEnrich} style={{
+                    background: "var(--yellow)", color: "#000", border: "none",
+                    borderRadius: "var(--radius)", padding: "8px 18px",
+                    fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, cursor: "pointer",
+                    display: "block", marginBottom: 8, width: "100%",
+                  }}>
+                    Enrich logistic_type ({syncResult!.unknown_count} órdenes)
+                  </button>
+                )}
+
+                {enrichPhase === "running" && (
+                  <p style={{ fontSize: 13, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginBottom: 8 }}>
+                    Enriching…
+                  </p>
+                )}
+
+                {enrichPhase === "done" && (
+                  <p style={{ fontSize: 13, color: "var(--green)", fontFamily: "var(--font-mono)", marginBottom: 8 }}>
+                    ✓ {enrichResult?.enriched} enriched, {enrichResult?.skipped} skipped
+                  </p>
+                )}
+
+                {enrichPhase === "error" && (
+                  <p style={{ fontSize: 13, color: "var(--red)", marginBottom: 8 }}>
+                    Error al enrichir. Revisá los logs.
+                  </p>
+                )}
+
+                <button onClick={() => { setSyncOpen(false); setSyncPhase("idle"); setEnrichPhase("idle"); }} style={{
                   background: "var(--yellow)", color: "#000", border: "none",
                   borderRadius: "var(--radius)", padding: "8px 18px",
                   fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, cursor: "pointer",
